@@ -1,0 +1,62 @@
+
+\section{Literature Review}
+
+\subsection{Container Architecture and Security Model}
+
+Containers provide operating system-level virtualization through Linux kernel mechanisms. Unlike virtual machines where each guest has its own kernel, containers share a single host kernel~\cite{wang2023}. This architectural choice provides significant performance advantages but concentrates attack surface. Flauzac et al.~\cite{flauzac2020} review native container security, noting that while containers impose minimal overhead compared to virtual machines, the shared kernel creates weaker isolation boundaries. A kernel exploit that succeeds against one container can potentially compromise all containers on the host.
+
+The Open Container Initiative (OCI) defines standard container runtime specifications, enabling portability across platforms. Merkel~\cite{merkel2014} introduced Docker, which popularized container technology and drove adoption of these standards. Kozhirbayev and Sinnott~\cite{kozhirbayev2017} compare container performance against hypervisor-based approaches, confirming the performance advantage of containers at the cost of weaker isolation.
+
+
+\subsection{Linux Security Mechanisms}
+
+\textbf{Seccomp (Secure Computing Mode).} Seccomp enables syscall filtering at the kernel level using Berkeley Packet Filter rules. By restricting available syscalls, seccomp reduces the container attack surface regardless of other permissions granted. Lopes et al.~\cite{lopes2020} demonstrate that seccomp profiles can be automatically generated through runtime syscall tracing, reducing available syscalls by up to 80\% compared to default configurations while maintaining application compatibility. Schrammel et al.~\cite{schrammel2022} extend syscall filtering with memory isolation techniques, showing how kernel-level mechanisms can effectively restrict container behavior.
+
+Canella et al.~\cite{canella2021} present automated approaches for generating strict syscall filters, combining static and dynamic analysis to identify all possible syscall requirements. Their work addresses limitations of purely behavioral profiling by incorporating techniques to capture infrequently executed code paths.
+
+\textbf{Mandatory Access Control.} AppArmor provides path-based mandatory access control, confining programs to specific filesystem access patterns. Mattetti and Allouche~\cite{mattetti2020} combine seccomp with AppArmor policies for comprehensive automatic security hardening. By integrating multiple enforcement mechanisms, organizations achieve stronger security than either mechanism alone.
+
+\textbf{eBPF-Based Monitoring.} eBPF enables efficient kernel-level program execution for monitoring and enforcement. Aich et al.~\cite{aich2021} demonstrate eBPF applications in security, showing how kernel-level tracing can provide fine-grained visibility into container behavior with minimal performance overhead.
+
+
+\subsection{Sandboxed Container Runtimes}
+
+Three primary approaches provide enhanced container isolation:
+
+\textbf{gVisor.} gVisor implements a user-space kernel written in Go that intercepts syscalls before they reach the host kernel. By handling syscalls in an isolated sentry process, gVisor dramatically reduces the host kernel attack surface. Only a minimal set of syscalls required by gVisor itself reach the host kernel. However, this extra abstraction layer introduces substantial performance overhead.
+
+\textbf{Kata Containers.} Kata Containers runs each container inside a lightweight virtual machine using hypervisors like QEMU or Firecracker. This approach provides complete kernel isolation—each container receives its own dedicated guest kernel protected by hardware virtualization. This eliminates the shared kernel attack surface entirely.
+
+\textbf{runc.} The default OCI runtime, runc, provides no isolation beyond standard kernel mechanisms (namespaces, cgroups, capabilities). It prioritizes performance and compatibility over enhanced security.
+
+\textbf{Comparative Analysis.} Wang et al.~\cite{wang2022} conduct performance and isolation analysis of all three approaches. Their evaluation shows that runc outperforms sandboxed alternatives in performance but offers weaker isolation. Importantly, they do not evaluate what security level can be achieved with properly configured policies on runc itself.
+
+Viktorsson et al.~\cite{viktorsson2020} evaluate security-performance trade-offs across runtimes using representative microservice benchmarks. Their findings show that gVisor introduces 50-100\% overhead, Kata introduces 20-40\% overhead, and runc provides near-native performance. However, they use default runc configurations without hardened policies.
+
+Espe et al.~\cite{espe2020} provide comprehensive performance evaluation of container runtimes using detailed benchmarking frameworks. Their work establishes performance baselines but does not address security hardening scenarios.
+
+Volpert et al.~\cite{volpert2024} provide empirical analysis of OCI runtime isolation capabilities using eBPF-based instrumentation. They measure CPU overhead, memory latency, I/O performance, and container lifecycle operations, establishing that runc delivers optimal performance with default configurations but do not compare against hardened configurations.
+
+
+\subsection{Automated Policy Generation and Container Hardening}
+
+\textbf{Automated Seccomp Profiling.} Lopes et al.~\cite{lopes2020} demonstrate that runtime tracing can generate application-specific seccomp profiles reducing attack surface substantially. Their evaluation shows that custom profiles improve security compared to defaults while maintaining compatibility.
+
+\textbf{Policy Generation Frameworks.} Li et al.~\cite{li2021} demonstrate automatic generation of inter-service access control policies in microservices using static analysis. Their work shows that automated approaches can effectively constrain behavior based on observed requirements.
+
+\textbf{Container Security Hardening.} Mattetti and Allouche~\cite{mattetti2020} present comprehensive framework for automatic hardening combining multiple enforcement mechanisms. Pothula et al.~\cite{pothula2019} develop security control mapping for runtime container hardening.
+
+\textbf{Threat Modeling and Security Analysis.} Wong et al.~\cite{wong2023} conduct comprehensive threat modeling of containers using the STRIDE framework, identifying vulnerabilities across the entire container supply chain. Their work confirms that containers present multiple attack surfaces requiring defense-in-depth. Getahun~\cite{getahun2021} extends threat analysis through detailed examination of container security threats and mitigation strategies.
+
+
+\subsection{Research Gap}
+
+Current literature reveals three critical gaps:
+
+\textbf{Gap 1: Missing Comparative Study.} Existing runtime comparisons use default runc configurations without security hardening~\cite{wang2022,volpert2024,viktorsson2020}. No research compares a properly hardened traditional runtime against sandboxed alternatives, leaving security-performance trade-offs unknown.
+
+\textbf{Gap 2: Lack of Developer-Focused Solutions.} Automated policy generation techniques exist~\cite{lopes2020}, but no integrated runtime solution provides automatic discovery, synthesis, and enforcement of comprehensive policies at the runtime level for direct developer use without infrastructure changes.
+
+\textbf{Gap 3: Limited Integration.} While individual components exist (seccomp profiling, AppArmor policies, eBPF monitoring), comprehensive integration of these mechanisms into a single developer-friendly runtime remains unexplored.
+
+This thesis addresses these gaps by implementing an automated security-first OCI runtime and conducting the first direct comparison of hardened traditional runtimes against sandboxed alternatives using representative workloads and comprehensive evaluation metrics.

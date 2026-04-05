@@ -1,0 +1,78 @@
+
+\section{Introduction}
+
+\subsection{Background}
+
+Containers have become the dominant deployment model for modern applications. However, unlike virtual machines that provide hardware-enforced isolation, containers share the host kernel with all other containers, creating a significant attack surface \cite{wang2023}. This shared kernel model means that a single kernel vulnerability can potentially compromise all containers on a host.
+
+The Open Container Initiative (OCI) standardizes container runtimes. The reference implementation, runc, prioritizes performance and compatibility over security~\cite{volpert2024}. Linux provides kernel-level security mechanisms—seccomp for syscall filtering and AppArmor for mandatory access control—that can restrict container behavior~\cite{lopes2020}. However, these mechanisms require manual configuration, which is complex and time-consuming. Default configurations remain permissive to ensure maximum compatibility, leaving substantial attack surface exposed.
+
+Alternative approaches like gVisor and Kata Containers provide stronger isolation by running containers in a user-space kernel or lightweight virtual machines. These approaches significantly reduce attack surface~\cite{wang2022}. However, they introduce substantial performance overhead (20-100\% degradation depending on workload) and operational complexity~\cite{viktorsson2020}. This creates a fundamental trade-off: stronger isolation comes at a performance cost.
+
+
+\subsection{Problem Statement and Research Gap}
+
+Three critical research gaps exist:
+
+\textbf{Gap 1: Missing Comparative Study.} No recent research has compared a properly hardened traditional runtime (runc with strict seccomp and AppArmor policies) against sandboxed alternatives. Existing comparisons use default runc configurations without security or old enough to reconduct them hardening~\cite{wang2022,volpert2024}. The actual security-performance trade-offs remain unknown.
+
+\textbf{Gap 2: No Developer-Friendly Automated Security.} Current approaches require either manual policy configuration or integration into complex DevOps pipelines. Developers need a simple runtime that automatically generates and enforces security policies without manual intervention or infrastructure changes. This is fundamentally different from pipeline-based security automation—it must work at the runtime level itself~\cite{lopes2020}.
+
+\textbf{Gap 3: Limited Automated Policy Generation.} While prior work demonstrates seccomp profile generation through behavioral tracing~\cite{lopes2020}, no comprehensive solution integrates seccomp, AppArmor, capability dropping, and device restrictions into a single runtime that developers can use directly, without manual configs editing~\cite{mattetti2020}.
+
+
+\subsection{Research Questions}
+
+This thesis addresses:
+
+\begin{enumerate}
+    \item Can automatically generated seccomp and AppArmor policies achieve security comparable to sandboxed runtimes while maintaining performance closer to default runc?
+    \item How should a container runtime automatically discover and synthesize comprehensive security policies from application behavior?
+    \item What is the actual security-performance trade-off when comparing a properly hardened traditional runtime against sandboxed alternatives?
+\end{enumerate}
+
+
+\subsection{Proposed Approach}
+
+We propose implementing a security-first OCI runtime that:
+
+\begin{itemize}
+    \item Automatically traces container behavior using eBPF during application startup and execution
+    \item Synthesizes minimal seccomp profiles (allowlisting only required syscalls)
+    \item Generates AppArmor policies restricting filesystem access to necessary paths
+    \item Drops unnecessary Linux capabilities and restricts device access
+    \item Requires no developer configuration or manual policy creation
+    \item Integrates as a standard OCI runtime compatible with Docker and Kubernetes
+\end{itemize}
+
+The implementation will support both learning mode (behavioral profiling and policy generation) and enforcement mode (using generated policies).
+
+
+\subsection{Experimental Evaluation}
+
+We will compare security and performance across five configurations:
+
+\begin{itemize}
+    \item \textbf{runc (default):} Standard OCI runtime with default policies
+    \item \textbf{Proposed runtime:} Automated security generation and enforcement
+    \item \textbf{gVisor:} User-space kernel sandbox approach
+    \item \textbf{Kata Containers:} Virtual machine-based isolation
+\end{itemize}
+
+Evaluation will use representative workloads: web servers (nginx), databases (redis, postgresql), language runtimes, and microservices. Metrics will include startup time, CPU overhead, memory footprint, I/O performance, and security effectiveness against known container escape vectors~\cite{cve2019}.
+
+
+\subsection{Expected Contribution}
+
+This research will provide:
+
+\begin{enumerate}
+    \item The first direct comparison of a properly hardened traditional runtime against sandboxed alternatives, providing empirical data on security-performance trade-offs
+    \item A practical, developer-friendly runtime that automatically generates and enforces security policies without manual configuration
+    \item Evidence-based guidance for organizations selecting appropriate container isolation strategies for different security requirements
+\end{enumerate}
+
+If automated hardening can achieve security comparable to sandboxed solutions with significantly better performance, it represents a more practical security solution for the majority of deployments.
+
+
+\subsection{Thesis Organization}

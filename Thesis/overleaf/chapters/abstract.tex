@@ -1,0 +1,4 @@
+\begin{abstract}
+The Open Container Initiative (OCI) specifications decouple image format, runtime, and tooling, enabling containers built with one implementation to be executed by another runtime and orchestrated via a third CLI. This modularity, together with the open-source nature of most components, allows deep customization of container execution to meet specific security requirements. Building on this flexibility, this project proposes and implements a security-first OCI runtime compatible with Docker and Podman. The runtime enforces strong defaults and automatically generates confinement policies (AppArmor and seccomp) during container setup. We will conduct a comparative study of security effectiveness and resource overhead versus sandboxed alternatives (gVisor and Kata Containers), assessing isolation strength, performance, and compatibility.
+
+\end{abstract}
