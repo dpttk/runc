@@ -26,6 +26,51 @@ import (
 
 var errEmptyID = errors.New("container id cannot be empty")
 
+// defaultDockerCapabilities returns the full standard set of 14 capabilities
+// that are typically granted by default in Docker/runc containers
+func defaultDockerCapabilities() []string {
+	return []string{
+		"CAP_CHOWN",
+		"CAP_DAC_OVERRIDE",
+		"CAP_FOWNER",
+		"CAP_FSETID",
+		"CAP_KILL",
+		"CAP_SETGID",
+		"CAP_SETUID",
+		"CAP_SETPCAP",
+		"CAP_NET_BIND_SERVICE",
+		"CAP_NET_RAW",
+		"CAP_SYS_CHROOT",
+		"CAP_MKNOD",
+		"CAP_AUDIT_WRITE",
+		"CAP_SETFCAP",
+	}
+}
+
+// applyDefaultCapabilities modifies the spec to use the full standard
+// Docker/runc default capabilities set if the --default-capabilities flag is set
+func applyDefaultCapabilities(spec *specs.Spec, useDefault bool) {
+	if !useDefault || spec.Process == nil {
+		return
+	}
+
+	logrus.Infof("Applying default capabilities (14 caps)")
+
+	// Ensure capabilities structure exists
+	if spec.Process.Capabilities == nil {
+		spec.Process.Capabilities = &specs.LinuxCapabilities{}
+	}
+
+	defaultCaps := defaultDockerCapabilities()
+	spec.Process.Capabilities.Bounding = defaultCaps
+	spec.Process.Capabilities.Effective = defaultCaps
+	spec.Process.Capabilities.Permitted = defaultCaps
+	spec.Process.Capabilities.Inheritable = defaultCaps
+	spec.Process.Capabilities.Ambient = defaultCaps
+
+	logrus.Infof("Applied capabilities: %v", defaultCaps)
+}
+
 // getContainer returns the specified container instance by loading it from
 // a state directory (root).
 func getContainer(context *cli.Context) (*libcontainer.Container, error) {
@@ -372,6 +417,9 @@ func startContainer(context *cli.Context, action CtAct, criuOpts *libcontainer.C
 	if err != nil {
 		return -1, err
 	}
+
+	// Apply default Docker/runc capabilities if the flag is set
+	applyDefaultCapabilities(spec, context.Bool("default-capabilities"))
 
 	id := context.Args().First()
 	if id == "" {
