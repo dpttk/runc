@@ -33,18 +33,33 @@ func Example() *specs.Spec {
 			Capabilities: &specs.LinuxCapabilities{
 				Bounding: []string{
 					"CAP_AUDIT_WRITE",
+					"CAP_CHOWN",
+					"CAP_FOWNER",
 					"CAP_KILL",
 					"CAP_NET_BIND_SERVICE",
+					"CAP_NET_RAW",
+					"CAP_SETPCAP",
+					"CAP_SYS_CHROOT",
 				},
 				Permitted: []string{
 					"CAP_AUDIT_WRITE",
+					"CAP_CHOWN",
+					"CAP_FOWNER",
 					"CAP_KILL",
 					"CAP_NET_BIND_SERVICE",
+					"CAP_NET_RAW",
+					"CAP_SETPCAP",
+					"CAP_SYS_CHROOT",
 				},
 				Effective: []string{
 					"CAP_AUDIT_WRITE",
+					"CAP_CHOWN",
+					"CAP_FOWNER",
 					"CAP_KILL",
 					"CAP_NET_BIND_SERVICE",
+					"CAP_NET_RAW",
+					"CAP_SETPCAP",
+					"CAP_SYS_CHROOT",
 				},
 			},
 			Rlimits: []specs.POSIXRlimit{
