@@ -59,6 +59,15 @@ command(s) that get executed on start, edit the args parameter of the spec. See
 			Name:  "default-capabilities",
 			Usage: "use the full standard runc/Docker default capabilities set (14 capabilities) instead of the minimal set",
 		},
+		cli.BoolFlag{
+			Name:  "security-scan",
+			Usage: "enable security artifact collection: inject oci-seccomp-bpf-hook (prestart), poststart cap snapshot, and AppArmor notes under generated/ in the bundle (requires external hook binary or --scan-seccomp-hook)",
+		},
+		cli.StringFlag{
+			Name:  "scan-seccomp-hook",
+			Value: "",
+			Usage: "path to oci-seccomp-bpf-hook (accepts -s) or a compatible stub; if empty, search standard install paths",
+		},
 	},
 	Action: func(context *cli.Context) error {
 		if err := checkArgs(context, 1, exactArgs); err != nil {

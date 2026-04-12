@@ -421,6 +421,10 @@ func startContainer(context *cli.Context, action CtAct, criuOpts *libcontainer.C
 	// Apply default Docker/runc capabilities if the flag is set
 	applyDefaultCapabilities(spec, context.Bool("default-capabilities"))
 
+	if err := applySecurityScan(spec, context); err != nil {
+		return -1, err
+	}
+
 	id := context.Args().First()
 	if id == "" {
 		return -1, errEmptyID
