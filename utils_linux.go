@@ -47,6 +47,22 @@ func defaultDockerCapabilities() []string {
 	}
 }
 
+// DefaultMinimalCapabilities returns the reduced default capability set (8)
+// used when --default-capabilities is not set. Security-scan merges trace
+// results against this baseline when deciding whether to update config.json.
+func DefaultMinimalCapabilities() []string {
+	return []string{
+		"CAP_AUDIT_WRITE",
+		"CAP_CHOWN",
+		"CAP_FOWNER",
+		"CAP_KILL",
+		"CAP_NET_BIND_SERVICE",
+		"CAP_NET_RAW",
+		"CAP_SETPCAP",
+		"CAP_SYS_CHROOT",
+	}
+}
+
 // applyDefaultCapabilities modifies the spec to use the full standard
 // Docker/runc default capabilities set if the --default-capabilities flag is set
 func applyDefaultCapabilities(spec *specs.Spec, useDefault bool) {
@@ -421,13 +437,13 @@ func startContainer(context *cli.Context, action CtAct, criuOpts *libcontainer.C
 	// Apply default Docker/runc capabilities if the flag is set
 	applyDefaultCapabilities(spec, context.Bool("default-capabilities"))
 
-	if err := applySecurityScan(spec, context); err != nil {
-		return -1, err
-	}
-
 	id := context.Args().First()
 	if id == "" {
 		return -1, errEmptyID
+	}
+
+	if err := applySecurityScan(spec, context, id); err != nil {
+		return -1, err
 	}
 
 	notifySocket := newNotifySocket(context, os.Getenv("NOTIFY_SOCKET"), id)
@@ -466,7 +482,11 @@ func startContainer(context *cli.Context, action CtAct, criuOpts *libcontainer.C
 		criuOpts:        criuOpts,
 		init:            true,
 	}
-	return r.run(spec.Process)
+	status, runErr := r.run(spec.Process)
+	if ferr := finalizeSecurityScan(context, action); ferr != nil {
+		logrus.Warnf("security-scan finalize: %v", ferr)
+	}
+	return status, runErr
 }
 
 func setupPidfdSocket(process *libcontainer.Process, sockpath string) (_clean func(), _ error) {

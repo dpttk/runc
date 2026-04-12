@@ -74,12 +74,17 @@ command(s) that get executed on start, edit the args parameter of the spec. See
 		},
 		cli.BoolFlag{
 			Name:  "security-scan",
-			Usage: "enable security artifact collection: inject oci-seccomp-bpf-hook (prestart), poststart cap snapshot, and AppArmor notes under generated/ in the bundle (requires external hook binary or --scan-seccomp-hook)",
+			Usage: "enable security artifact collection on run: oci-seccomp-bpf-hook (prestart), optional BCC capable trace, Cap* snapshot, AppArmor stub under generated/; after exit may merge capabilities into config.json if wider than minimal default (not for runc create)",
 		},
 		cli.StringFlag{
 			Name:  "scan-seccomp-hook",
 			Value: "",
 			Usage: "path to oci-seccomp-bpf-hook (accepts -s) or a compatible stub; if empty, search standard install paths",
+		},
+		cli.StringFlag{
+			Name:  "scan-capable",
+			Value: "",
+			Usage: "path to BCC capable (e.g. capable-bpfcc or /usr/share/bcc/tools/capable); if set and executable, traces used caps in background to generated/capable-bpfcc.log; otherwise search PATH and default locations",
 		},
 	},
 	Action: func(context *cli.Context) error {
