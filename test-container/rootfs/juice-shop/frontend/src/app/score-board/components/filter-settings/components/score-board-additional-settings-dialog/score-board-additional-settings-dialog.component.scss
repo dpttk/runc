@@ -1,0 +1,74 @@
+/*!
+ * Copyright (c) 2014-2026 Bjoern Kimminich & the OWASP Juice Shop contributors.
+ * SPDX-License-Identifier: MIT
+ */
+
+@use '../../../../../../styles/variables' as *;
+
+.mat-mdc-radio-button ~ .mat-mdc-radio-button {
+  margin-left: $space-m;
+}
+
+mat-dialog-actions {
+  justify-content: end;
+}
+
+h1 {
+  font-size: 24px !important;
+  margin-bottom: $space-l;
+}
+
+.settings {
+  min-height: 400px;
+  overflow-y: auto;
+}
+
+.setting-group {
+  border-bottom: 3px solid var(--theme-background-lighter);
+  margin-bottom: $space-m;
+
+  h2 {
+    font-size: 18px;
+    margin-bottom: $space-xs;
+  }
+
+  &:last-child {
+    border-bottom: unset;
+    margin-bottom: 0;
+  }
+}
+
+.setting {
+  align-items: center;
+  display: grid;
+  gap: $space-m;
+  grid-template-columns: auto max-content;
+  margin-bottom: $space-m;
+}
+
+button mat-icon {
+  margin-right: $space-xs;
+}
+
+h2 {
+  color: var(--theme-text);
+}
+
+span {
+  color: var(--theme-text);
+  font-size: 14px;
+}
+
+mat-icon {
+  font-size: 24px !important; /* Increases the icon size */
+  height: 24px !important;
+  width: 24px !important;
+}
+
+.tooltip {
+  font-size: 14px;
+}
+
+.close-btn:hover {
+  background-color: var(--theme-background-lighter) !important;
+}

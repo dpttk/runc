@@ -265,6 +265,9 @@ func shellSingleQuote(s string) string {
 
 func buildCapHookScript(bundleDir string) string {
 	q := shellSingleQuote(bundleDir)
+	// In fmt.Sprintf, %% becomes a literal % in the output shell script, so %%s
+	// here yields the shell snippet printf '%s' (correct for /bin/sh). A single
+	// %s would be consumed by Go as a format verb and break the lone bundle=%s arg.
 	return fmt.Sprintf(`#!/bin/sh
 set -e
 state=$(cat)

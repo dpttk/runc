@@ -1,0 +1,61 @@
+/*!
+ * Copyright (c) 2014-2026 Bjoern Kimminich & the OWASP Juice Shop contributors.
+ * SPDX-License-Identifier: MIT
+ */
+
+@use '../../../../styles/variables' as *;
+
+$vertical-margin: $space-2xs;
+$vertical-padding: $space-xs;
+
+:host {
+  // use 2 columns ipads and smaller
+  @media (max-width: 810px) {
+    grid-column: span 2;
+  }
+  @media (max-width: 600px) {
+    grid-column: span 1;
+  }
+}
+
+.difficulties-group {
+  background-color: var(--theme-background-darkest);
+  border-radius: 4px;
+
+  color: var(--theme-text);
+  column-gap: $space-m;
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+
+  height: calc(100% - (2 * $vertical-margin + 2 * $vertical-padding));
+
+  margin: $vertical-margin $space-2xs;
+
+  padding: $vertical-padding $space-m;
+  row-gap: $space-2xs;
+
+  .difficulty-container {
+    align-items: center;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+  }
+
+  .total-challenges {
+    color: var(--theme-text-invert-30);
+  }
+}
+
+.star-container {
+  align-items: center;
+  display: flex;
+  justify-content: center;
+
+  .star-difficulty-label {
+    font-size: 11px;
+    line-height: 11px;
+    // text looks a bit more centered in the star if it is a bit under the center
+    margin-top: $space-3xs;
+    position: absolute;
+  }
+}

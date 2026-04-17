@@ -483,8 +483,10 @@ func startContainer(context *cli.Context, action CtAct, criuOpts *libcontainer.C
 		init:            true,
 	}
 	status, runErr := r.run(spec.Process)
-	if ferr := finalizeSecurityScan(context, action); ferr != nil {
-		logrus.Warnf("security-scan finalize: %v", ferr)
+	if runErr == nil {
+		if ferr := finalizeSecurityScan(context, action); ferr != nil {
+			logrus.Warnf("security-scan finalize: %v", ferr)
+		}
 	}
 	return status, runErr
 }

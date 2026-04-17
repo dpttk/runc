@@ -1,0 +1,174 @@
+/*!
+ * Copyright (c) 2014-2026 Bjoern Kimminich & the OWASP Juice Shop contributors.
+ * SPDX-License-Identifier: MIT
+ */
+
+@use '../../styles/variables' as *;
+
+$bg-heading: rgba(0, 0, 0, 0.2);
+
+.table-container {
+  min-width: 350px;
+  width: 80%;
+}
+
+.heading {
+  background: $bg-heading;
+  font-size: x-large;
+  justify-content: center;
+  padding: $space-s $space-ml;
+}
+
+.img-thumbnail {
+  align-self: start;
+  width: 60% !important;       /* image ~60%, info-box ~40% */
+}
+
+.heading {
+  margin-bottom: $space-s;
+}
+
+.product {
+  align-items: stretch;
+  cursor: pointer;
+  display: flex;               /* lay out image + info side-by-side */
+  flex-direction: row;
+  gap: $space-s;
+}
+
+.item-price {
+  font-size: initial;
+  margin-top: $space-s;
+  text-align: center;
+}
+
+.item-name {
+  font-size: large;
+  text-align: center;
+}
+
+.emptyState {
+  display: block;
+  height: auto !important;
+  margin: $space-ml auto;
+  width: 50%;
+}
+
+.noResult {
+  display: block;
+  margin-left: auto;
+  margin-right: auto;
+  width: 60%;
+}
+
+.noResultText {
+  display: block;
+  margin-top: $space-s;
+  text-align: center;
+}
+
+.ribbon-card {
+  position: relative;
+}
+
+.ribbon {
+  height: 150px;
+  overflow: hidden;
+  pointer-events: none;
+  position: absolute;
+  width: 150px;
+}
+
+.ribbon::before {
+  content: '';
+  display: block;
+  position: absolute;
+  z-index: -1;
+}
+
+.ribbon span {
+  box-shadow: 0 5px 10px rgba(0, 0, 0, 0.1);
+  color: #fff;
+  display: block;
+  font: 700 18px/1 'Lato', sans-serif;
+  padding: $space-m 0;
+  position: absolute;
+  text-align: center;
+  text-shadow: 0 1px 1px rgba(0, 0, 0, 0.2);
+  width: 225px;
+}
+
+.ribbon-top-left {
+  left: -10px;
+  top: -10px;
+  z-index: 1;
+}
+
+.ribbon-top-left::before {
+  border-left-color: transparent;
+  border-top-color: transparent;
+  right: 0;
+  top: 0;
+}
+
+.ribbon-top-left span {
+  right: -25px;
+  top: 30px;
+  transform: rotate(-45deg);
+}
+
+.img-responsive {
+  height: auto;
+  object-fit: cover;
+  width: 100%;
+}
+
+.btn-basket {
+  margin-top: $space-ml;
+}
+
+.mdc-card {
+  border: 0;
+  display: flex;
+  flex-direction: column;
+  height: calc(100% - 20px);
+  justify-content: space-between;
+  overflow: hidden;
+}
+
+mat-card {
+  height: calc(100% - 70px);
+  width: 100%;
+}
+
+mat-grid-tile {
+  align-items: stretch;
+  height: auto !important;
+}
+
+.mat-divider.mat-divider-horizontal {
+  margin-top: $space-s;
+}
+
+.product {
+  margin-left: -$space-m;
+  margin-right: $space-xs;
+  margin-top: -$space-m;
+}
+
+
+.center-align {
+  display: flex;
+  justify-content: center;
+}
+
+
+.info-box {
+  align-self: center;
+  width: 40%;
+}
+
+.basket-btn-container {
+  display: flex;
+  justify-content: center;
+}

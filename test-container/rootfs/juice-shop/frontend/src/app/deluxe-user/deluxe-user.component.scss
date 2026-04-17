@@ -1,0 +1,76 @@
+/*!
+ * Copyright (c) 2014-2026 Bjoern Kimminich & the OWASP Juice Shop contributors.
+ * SPDX-License-Identifier: MIT
+ */
+
+@use '../../styles/variables' as *;
+
+:host {
+  display: flex;
+  flex-direction: column;
+  gap: $space-s;
+  margin-left: 10%;
+  margin-right: 10%;
+}
+
+.heading {
+  background: rgba(0, 0, 0, 0.2);
+  font-size: x-large;
+  padding: $space-m $space-l;
+}
+
+.deluxe-membership {
+  align-items: center;
+  display: grid;
+  gap: $space-m;
+  grid-template-columns: minmax(min-content, 600px) auto;
+
+  strong {
+    font-size: 1.5em;
+  }
+
+  .card-text {
+    align-items: center;
+    display: flex;
+    flex-direction: column;
+    gap: $space-s;
+    padding: $space-m;
+    text-align: center;
+  }
+
+  @media screen and (max-width: 768px) {
+    grid-template-columns: 1fr;
+  }
+}
+
+.feature-cards-container {
+  display: grid;
+  gap: $space-s;
+  grid-template-columns: repeat(3, 1fr);
+
+  @media screen and (max-width: 768px) {
+    grid-template-columns: 1fr;
+  }
+}
+
+.feature-card {
+  align-items: center;
+  display: grid;
+  gap: $space-s;
+  grid-template-columns: max-content auto;
+  padding: $space-m;
+
+  .card-text {
+    display: flex;
+    flex-direction: column;
+    gap: $space-xs;
+    padding: 0 $space-m;
+    text-align: center;
+  }
+
+  mat-icon {
+    font-size: 72px;
+    height: 72px;
+    width: 72px;
+  }
+}

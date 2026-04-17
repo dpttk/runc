@@ -1,0 +1,6 @@
+@use '../../styles/variables' as *;
+
+:host {
+  display: block;
+  padding-top: $space-m;
+}

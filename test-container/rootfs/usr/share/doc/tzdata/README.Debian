@@ -1,0 +1,68 @@
+README for tzdata / tzdata-legacy
+=================================
+
+The tzdata and tzdata-legacy packages contain data required for the
+implementation of standard local time for many representative locations around
+the globe. Timezones are typically identified by continent or ocean, followed
+by the name of the largest city within the region. This approach helps avoid
+political issues that could arise from selecting timezones based on country,
+region, or timezone abbreviation.
+
+
+tzdata package
+~~~~~~~~~~~~~~
+The tzdata package contains the "POSIX" version of the timezone data that most
+users will use, as their system hardware clock is set either to UTC or to a
+timezone with a fixed offset from Coordinated Universal Time (UTC). For this
+reason, it does not include leap seconds, and their possible correction must be
+made by another system (e.g., NTP).
+
+The Debconf interface (see section below) allows users to select from all the
+timezones available in the tzdata package.
+
+
+tzdata-legacy package
+~~~~~~~~~~~~~~~~~~~~~
+The tzdata-legacy package contains:
+
+- Additional timezones that have been deprecated upstream. These may include
+  timezones that are not following the current rule of using the geographical
+  region (continent or ocean) and city name, a city whose name has changed, or
+  a deprecated timezone abbreviation. These zones are not selectable using the
+  Debconf interface but may be useful for certain software or testsuites. They
+  can also be used by setting the TZ environment variable to the name of the
+  timezone.
+
+- The "right" version of both the legacy and non-legacy timezones. This version
+  accounts for leap seconds, diverging from the "posix" version starting in
+  June 1972, when the first leap second was introduced. It has a fixed -10
+  second offset from International Atomic Time (TAI) and, as of 2025, a
+  27-second difference from UTC. This version is suitable for systems with a
+  hardware clock set to TAI-10s, which is the current IBM recommended setting
+  on IBM mainframes. To use it, set the TZDIR environment variable to
+  /usr/share/zoneinfo/right.
+
+
+Configuring the system's timezone interactively
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The timezone configuration can be done interactively using Debconf by
+reconfiguring the tzdata package, with the following command:
+
+  dpkg-reconfigure tzdata
+
+
+Configuring the system's timezone programmatically
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+To programmatically read or configure the system's timezone, it is recommended
+to use the systemd interface:
+- To show the current timezone:
+  timedatectl show --value --property=Timezone
+- To set the timezone:
+  timedatectl set-timezone Europe/Paris
+
+Alternatively, you can use the following commands to read and update the
+/etc/localtime symbolic link:
+- To read the current timezone:
+  readlink -f /etc/localtime  | sed -e 's,/usr/share/zoneinfo/,,'
+- To set the timezone:
+  ln -nsf /usr/share/zoneinfo/Europe/Paris /etc/localtime

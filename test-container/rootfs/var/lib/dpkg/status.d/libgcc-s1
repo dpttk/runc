@@ -1,0 +1,19 @@
+Package: libgcc-s1
+Source: gcc-14
+Version: 14.2.0-19
+Architecture: amd64
+Protected: yes
+Maintainer: Debian GCC Maintainers <debian-gcc@lists.debian.org>
+Installed-Size: 197
+Depends: gcc-14-base (= 14.2.0-19), libc6 (>= 2.35)
+Replaces: libgcc1 (<< 1:10)
+Provides: libgcc1 (= 1:14.2.0-19)
+Section: libs
+Priority: optional
+Multi-Arch: same
+Homepage: http://gcc.gnu.org/
+Description: GCC support library
+ Shared version of the support library, a library of internal subroutines
+ that GCC uses to overcome shortcomings of particular machines, or
+ special needs for some languages.
+Important: yes

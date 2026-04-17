@@ -1,0 +1,136 @@
+/*!
+ * Copyright (c) 2014-2026 Bjoern Kimminich & the OWASP Juice Shop contributors.
+ * SPDX-License-Identifier: MIT
+ */
+
+@use '../../styles/variables' as *;
+
+.btn-pay {
+  display: block;
+  margin-top: $space-ml;
+  padding: $space-s;
+  width: 100%;
+}
+
+mat-card {
+  height: auto;
+  margin-bottom: -$space-s !important;
+  margin-top: $space-ml;
+}
+
+mat-cell {
+  padding-left: $space-s;
+  padding-right: $space-s;
+}
+
+.price:last-of-type {
+  padding-right: $space-s;
+  text-align: right;
+}
+
+.label:first-of-type {
+  padding-left: $space-s;
+}
+
+table { width: 100%; }
+
+.mat-mdc-footer-cell { font-weight: bold; }
+
+.order-summary {
+  font-size: x-large;
+  font-weight: 500;
+  margin-bottom: $space-m;
+  padding-bottom: $space-s;
+  padding-left: $space-s;
+}
+
+.bonus-points {
+  color: var(--theme-text);
+  margin-top: $space-s;
+  text-align: center;
+}
+
+.mdc-card {
+  border: 0;
+  border-bottom: 0;
+  margin-top: -$space-2xs;
+  padding: $space-2xs;
+  width: 100%;
+}
+
+.mat-own-card {
+  background-color: var(--theme-background);
+  margin: auto;
+  max-width: 1200px;
+  padding: $space-ml;
+  width: 60% !important;
+}
+
+.mat-table .mat-row,
+.mat-table .mat-footer-cell {
+  border-bottom: 1px solid var(--theme-background-light);
+  border-radius: 5px !important;
+  padding: $space-s 0;
+}
+
+.mat-table {
+  background: transparent;
+  border-collapse: collapse;
+  width: 100%;
+}
+
+.mat-cell,
+.mat-footer-cell {
+  color: var(--theme-text);
+  padding: $space-s 0;
+}
+
+.mat-footer-cell.label {
+  font-weight: bold;
+  text-align: start;
+  text-indent: $space-s;
+}
+
+.mat-footer-cell.price {
+  font-weight: bold;
+  padding-right: $space-s !important;
+  text-align: end;
+}
+
+.container {
+  align-items: stretch;
+  display: flex;
+  flex-direction: row;
+  gap: $space-ml;
+}
+
+.column {
+  display: flex;
+  flex-direction: column;
+  gap: $space-ml;
+}
+
+.flex-50 { flex: 0 0 50%;
+  max-width: 50%;
+  min-width: 0; }
+
+.flex-60 { flex: 0 0 60%;
+  max-width: 60%;
+  min-width: 0; }
+
+.flex-40 { flex: 0 0 40%;
+  max-width: 40%;
+  min-width: 0; }
+
+.fill { height: auto;
+  width: 100%; }
+
+@media (max-width: 959.98px) {
+  .container { flex-direction: column; }
+
+  .flex-50,
+  .flex-60,
+  .flex-40 { flex: 0 0 100%;
+    max-width: 100%; }
+}
+

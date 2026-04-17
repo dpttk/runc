@@ -1,0 +1,122 @@
+/*!
+ * Copyright (c) 2014-2026 Bjoern Kimminich & the OWASP Juice Shop contributors.
+ * SPDX-License-Identifier: MIT
+ */
+
+@use '../../styles/variables' as *;
+
+$bg-heading: rgba(0, 0, 0, 0.13);
+
+.heading {
+  background: $bg-heading;
+  font-size: large;
+  justify-content: center;
+  margin-bottom: $space-s;
+  padding: $space-m;
+}
+
+.container {
+  display: grid;
+  gap: $space-3xl;
+  grid-template-columns: 1fr 1fr;
+
+  @media (max-width: 1100px) {
+    gap: $space-l;
+    grid-template-columns: 1fr;
+  }
+}
+
+mat-table {
+  height: 800px;
+}
+
+mat-header-row {
+  min-height: 0 !important;
+}
+
+.mat-column-icon svg,
+.mat-column-user_detail button {
+  margin-left: 38%;
+}
+
+mat-cell,
+mat-footer-cell,
+mat-header-cell {
+  align-items: normal;
+  display: block;
+}
+
+.cell-middle {
+  vertical-align: middle;
+}
+
+.hidden-table {
+  height: 0;
+  visibility: hidden;
+}
+
+.mat-column-comment {
+  flex: 0 0 55% !important;
+  -ms-hyphens: auto;
+  -moz-hyphens: auto;
+  -webkit-hyphens: auto;
+  hyphens: auto;
+  overflow-wrap: break-word;
+  padding: $space-3xs;
+  white-space: unset !important;
+  width: 55% !important;
+
+  word-break: break-word;
+  word-wrap: break-word !important;
+}
+
+.mat-column-user {
+  flex: 0 0 7% !important;
+  -ms-hyphens: auto;
+  -moz-hyphens: auto;
+  -webkit-hyphens: auto;
+  hyphens: auto;
+  overflow-wrap: break-word;
+  padding: $space-3xs;
+  white-space: unset !important;
+  width: 7% !important;
+  word-break: break-word;
+  word-wrap: break-word !important;
+}
+
+.mat-column-rating {
+  flex: 0 0 20% !important;
+  -ms-hyphens: auto;
+  -moz-hyphens: auto;
+  -webkit-hyphens: auto;
+  hyphens: auto;
+  overflow-wrap: break-word;
+  white-space: unset !important;
+  width: 20% !important;
+  word-break: break-word;
+  word-wrap: break-word !important;
+}
+
+mat-cell:last-child,
+mat-footer-cell:last-child,
+mat-header-cell:last-child {
+  padding-right: $space-3xl;
+}
+
+mat-row {
+  height: 69px;
+}
+
+.mat-own-card {
+  display: block;
+  margin-bottom: $space-ml;
+  margin-left: 10%;
+  margin-right: 10%;
+}
+
+p {
+  -webkit-box-orient: vertical;
+  display: -webkit-box;
+  line-clamp: 2;
+  overflow: hidden;
+}

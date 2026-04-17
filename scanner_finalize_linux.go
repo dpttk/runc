@@ -19,8 +19,9 @@ import (
 var capNameRegexp = regexp.MustCompile(`\b(CAP_[A-Z0-9_]+)\b`)
 
 // finalizeSecurityScan updates bundle/config.json with a merged capability set
-// after a successful run when --security-scan was used, if the merged set
-// exceeds the reduced default baseline and differs from config on disk.
+// after a completed container run (no runc transport error) when --security-scan
+// was used, if the merged set exceeds the reduced default baseline and differs
+// from config on disk. startContainer only calls this when r.run returns nil error.
 func finalizeSecurityScan(ctx *cli.Context, action CtAct) error {
 	if !ctx.Bool("security-scan") || action != CT_ACT_RUN {
 		return nil

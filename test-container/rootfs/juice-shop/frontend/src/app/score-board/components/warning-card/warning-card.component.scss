@@ -1,0 +1,31 @@
+/*!
+ * Copyright (c) 2014-2026 Bjoern Kimminich & the OWASP Juice Shop contributors.
+ * SPDX-License-Identifier: MIT
+ */
+
+@use '../../../../styles/variables' as *;
+
+.warning-container {
+  align-items: center;
+  background-color: var(--theme-background-dark);
+  border-radius: 4px;
+  display: grid;
+  grid-template-columns: auto min-content;
+  margin-top: $space-m;
+  padding: $space-s;
+  @media (max-width: 600px) {
+    grid-template-columns: auto;
+    row-gap: $space-s;
+  }
+}
+
+.warning-text {
+  margin-left: $space-s;
+  padding-right: $space-xs;
+}
+
+.warning-text-icon-group {
+  align-items: center;
+  display: grid;
+  grid-template-columns: min-content auto;
+}

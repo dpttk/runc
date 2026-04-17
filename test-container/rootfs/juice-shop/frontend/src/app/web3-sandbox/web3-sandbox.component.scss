@@ -1,0 +1,145 @@
+/*!
+ * Copyright (c) 2014-2026 Bjoern Kimminich & the OWASP Juice Shop contributors.
+ * SPDX-License-Identifier: MIT
+ */
+
+@use '../../styles/variables' as *;
+
+.playground-wallet {
+  display: flex;
+  justify-content: center;
+  margin-bottom: $space-ml;
+}
+
+.sandbox-container {
+  margin: $space-xl;
+
+  &_body {
+    display: flex;
+    flex-direction: row;
+    gap: $space-xl;
+    padding: $space-2xl;
+  }
+
+  &_body_left {
+    display: flex;
+    flex-direction: column;
+    width: 70%;
+  }
+
+  &_body_right {
+    align-items: flex-start;
+    display: flex;
+    flex-direction: column;
+    width: 30%;
+  }
+}
+@media (max-width: 840px) {
+  .sandbox-container_body {
+    flex-direction: column;
+  }
+
+  .sandbox-container_body_left,
+  .sandbox-container_body_right {
+    width: 100%;
+  }
+}
+
+.deployedaddresstext {
+  color: rgb(45, 151, 45);
+  font-weight: 600;
+  margin: $space-s 0;
+  word-break: break-all;
+}
+
+.invokecontainer {
+  display: flex;
+  flex-direction: column;
+  margin-top: $space-m;
+  max-height: 200px;
+  overflow: scroll;
+  padding: $space-m;
+  width: 100%;
+}
+
+.error-container {
+  display: flex;
+  flex-direction: column;
+  margin: $space-m 0;
+  max-height: 300px;
+  overflow: scroll;
+  padding: $space-m;
+
+  ul {
+    font-size: 12px;
+    padding-left: $space-m;
+  }
+}
+
+.editor-title {
+  font-size: 20px;
+  font-weight: 500;
+  margin-bottom: $space-m;
+  padding: 0 $space-xs;
+  width: 100%;
+}
+
+.function-container {
+  display: flex;
+  flex-direction: column;
+  margin-top: $space-xs;
+}
+
+.functionwtext-container {
+  align-items: flex-start;
+  display: flex;
+  justify-content: space-between;
+  margin-top: $space-xs;
+}
+
+.output-container {
+  display: flex;
+  width: 100%;
+  word-break: break-all;
+}
+
+.invoke-btncontainer {
+  display: flex;
+  justify-content: space-between;
+}
+
+.invoke-output {
+  font-size: 12px;
+  padding: $space-2xs;
+}
+
+h2 {
+  margin: 0;
+}
+
+ul {
+  padding-left: $space-m;
+}
+
+.contracts-title {
+  font-weight: 500;
+  margin-top: $space-m;
+}
+
+.form-fields-container {
+  display: flex;
+  flex-wrap: wrap;
+  gap: $space-m;
+  margin-bottom: $space-m;
+  width: 100%;
+}
+
+.contract-selector {
+  flex: 1 1 60%;
+  min-width: 200px;
+}
+
+.gwei-input {
+  flex: 1 1 30%;
+  min-width: 150px;
+}
