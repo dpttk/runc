@@ -26,8 +26,20 @@ import (
 
 var errEmptyID = errors.New("container id cannot be empty")
 
+// defaultRuncCapabilities returns the minimal set of 3 capabilities
+// that is the original upstream runc default (from runc spec template).
+// Grants only basic container operations: audit logging, signals, and
+// privileged port binding.
+func defaultRuncCapabilities() []string {
+	return []string{
+		"CAP_AUDIT_WRITE",
+		"CAP_KILL",
+		"CAP_NET_BIND_SERVICE",
+	}
+}
+
 // defaultDockerCapabilities returns the full standard set of 14 capabilities
-// that are typically granted by default in Docker/runc containers
+// that are typically granted by default in Docker containers.
 func defaultDockerCapabilities() []string {
 	return []string{
 		"CAP_CHOWN",
@@ -47,44 +59,64 @@ func defaultDockerCapabilities() []string {
 	}
 }
 
-// DefaultMinimalCapabilities returns the reduced default capability set (8)
-// used when --default-capabilities is not set. Security-scan merges trace
-// results against this baseline when deciding whether to update config.json.
+// DefaultMinimalCapabilities returns the minimal capability baseline used by
+// the security scanner. Our new default is zero capabilities, which serves
+// as the true minimum baseline for trace-based profile generation.
 func DefaultMinimalCapabilities() []string {
-	return []string{
-		"CAP_AUDIT_WRITE",
-		"CAP_CHOWN",
-		"CAP_FOWNER",
-		"CAP_KILL",
-		"CAP_NET_BIND_SERVICE",
-		"CAP_NET_RAW",
-		"CAP_SETPCAP",
-		"CAP_SYS_CHROOT",
-	}
+	return []string{}
 }
 
-// applyDefaultCapabilities modifies the spec to use the full standard
-// Docker/runc default capabilities set if the --default-capabilities flag is set
-func applyDefaultCapabilities(spec *specs.Spec, useDefault bool) {
-	if !useDefault || spec.Process == nil {
+// applyCapabilitiesOverride modifies the spec to use a preset capability set
+// based on the selected override mode:
+//   - "runc":   3-capability set (upstream runc default)
+//   - "docker": 14-capability set (Docker default)
+//   - "":       no override, keep spec as-is
+func applyCapabilitiesOverride(spec *specs.Spec, mode string) {
+	if mode == "" || spec.Process == nil {
 		return
 	}
 
-	logrus.Infof("Applying default capabilities (14 caps)")
+	var caps []string
+	switch mode {
+	case "runc":
+		caps = defaultRuncCapabilities()
+		logrus.Infof("Applying runc default capabilities (%d caps)", len(caps))
+	case "docker":
+		caps = defaultDockerCapabilities()
+		logrus.Infof("Applying Docker default capabilities (%d caps)", len(caps))
+	default:
+		return
+	}
 
-	// Ensure capabilities structure exists
 	if spec.Process.Capabilities == nil {
 		spec.Process.Capabilities = &specs.LinuxCapabilities{}
 	}
 
-	defaultCaps := defaultDockerCapabilities()
-	spec.Process.Capabilities.Bounding = defaultCaps
-	spec.Process.Capabilities.Effective = defaultCaps
-	spec.Process.Capabilities.Permitted = defaultCaps
-	spec.Process.Capabilities.Inheritable = defaultCaps
-	spec.Process.Capabilities.Ambient = defaultCaps
+	spec.Process.Capabilities.Bounding = caps
+	spec.Process.Capabilities.Effective = caps
+	spec.Process.Capabilities.Permitted = caps
+	spec.Process.Capabilities.Inheritable = caps
+	spec.Process.Capabilities.Ambient = caps
 
-	logrus.Infof("Applied capabilities: %v", defaultCaps)
+	logrus.Debugf("Applied capabilities: %v", caps)
+}
+
+// resolveCapabilitiesMode reads the CLI flags and returns the override mode.
+// Returns an error if both flags are set simultaneously.
+func resolveCapabilitiesMode(context *cli.Context) (string, error) {
+	useRunc := context.Bool("default-capabilities")
+	useDocker := context.Bool("default-capabilities-docker")
+
+	if useRunc && useDocker {
+		return "", errors.New("--default-capabilities and --default-capabilities-docker are mutually exclusive")
+	}
+	if useRunc {
+		return "runc", nil
+	}
+	if useDocker {
+		return "docker", nil
+	}
+	return "", nil
 }
 
 // getContainer returns the specified container instance by loading it from
@@ -434,8 +466,13 @@ func startContainer(context *cli.Context, action CtAct, criuOpts *libcontainer.C
 		return -1, err
 	}
 
-	// Apply default Docker/runc capabilities if the flag is set
-	applyDefaultCapabilities(spec, context.Bool("default-capabilities"))
+	// Apply capabilities override if --default-capabilities or
+	// --default-capabilities-docker is set.
+	mode, err := resolveCapabilitiesMode(context)
+	if err != nil {
+		return -1, err
+	}
+	applyCapabilitiesOverride(spec, mode)
 
 	id := context.Args().First()
 	if id == "" {

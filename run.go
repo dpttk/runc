@@ -70,7 +70,11 @@ command(s) that get executed on start, edit the args parameter of the spec. See
 		},
 		cli.BoolFlag{
 			Name:  "default-capabilities",
-			Usage: "use the full standard runc/Docker default capabilities set (14 capabilities) instead of the minimal set",
+			Usage: "use the original upstream runc default capabilities set (3 capabilities: CAP_AUDIT_WRITE, CAP_KILL, CAP_NET_BIND_SERVICE) instead of the empty default",
+		},
+		cli.BoolFlag{
+			Name:  "default-capabilities-docker",
+			Usage: "use the full standard Docker default capabilities set (14 capabilities) instead of the empty default",
 		},
 		cli.BoolFlag{
 			Name:  "security-scan",
