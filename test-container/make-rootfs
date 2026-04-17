@@ -1,0 +1,6 @@
+docker run -d -p 3000:3000 bkimminich/juice-shop
+
+docker export bkimminich/juice-shop  -o temp.tar.gz
+
+mkdir rootfs
+tar -xf temp.tar.gz -C rootfs
