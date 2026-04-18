@@ -1,0 +1,111 @@
+name: publish-runc-binary
+
+# Builds the runc-fork binary and publishes it as a workflow artifact so the
+# companion CI repo (thesis-ci-repo) can download it by commit sha and run the
+# scan matrix against it. See .cursor/log/CI.md for the end-to-end flow.
+
+on:
+  push:
+    branches:
+      - main
+      - "scanner/**"
+    tags:
+      - "v*"
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    outputs:
+      sha: ${{ steps.meta.outputs.sha }}
+      short_sha: ${{ steps.meta.outputs.short_sha }}
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: compute metadata
+        id: meta
+        run: |
+          sha="${{ github.sha }}"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "short_sha=${sha:0:12}" >> "$GITHUB_OUTPUT"
+
+      - name: install build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config libseccomp-dev
+
+      - name: setup go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          check-latest: true
+
+      - name: build runc
+        run: make runc
+
+      - name: checksum
+        run: |
+          sha256sum runc > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: record build metadata
+        run: |
+          cat > BUILD_INFO.txt <<EOF
+          repo=${{ github.repository }}
+          ref=${{ github.ref }}
+          ref_name=${{ github.ref_name }}
+          sha=${{ github.sha }}
+          run_id=${{ github.run_id }}
+          run_attempt=${{ github.run_attempt }}
+          event=${{ github.event_name }}
+          actor=${{ github.actor }}
+          built_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          EOF
+          cat BUILD_INFO.txt
+
+      - name: upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: runc-${{ github.sha }}
+          path: |
+            runc
+            SHA256SUMS
+            BUILD_INFO.txt
+          if-no-files-found: error
+          retention-days: 14
+
+  notify-ci-repo:
+    needs: build
+    # Do not auto-dispatch for PRs by default; e2e scan can be triggered by
+    # commenting /ci scan on the PR (separate workflow) or via workflow_dispatch
+    # in thesis-ci-repo. Main branch and scanner/* branches are dispatched.
+    if: >-
+      github.event_name == 'push' ||
+      github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-22.04
+    steps:
+      - name: dispatch runc-build-available
+        env:
+          GH_TOKEN: ${{ secrets.CI_REPO_DISPATCH_TOKEN }}
+          CI_REPO: ${{ vars.CI_REPO }}
+        run: |
+          if [[ -z "${GH_TOKEN:-}" || -z "${CI_REPO:-}" ]]; then
+            echo "::notice::CI_REPO_DISPATCH_TOKEN or vars.CI_REPO not set; skipping dispatch."
+            exit 0
+          fi
+          gh api "repos/${CI_REPO}/dispatches" \
+            -f event_type=runc-build-available \
+            -F "client_payload[runc_ref]=${{ github.sha }}" \
+            -F "client_payload[run_id]=${{ github.run_id }}" \
+            -F "client_payload[repo]=${{ github.repository }}" \
+            -F "client_payload[branch]=${{ github.ref_name }}" \
+            -F "client_payload[event]=${{ github.event_name }}"
