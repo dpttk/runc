@@ -91,6 +91,8 @@ func applySecurityScan(spec *specs.Spec, ctx *cli.Context, containerID string) e
 		return err
 	}
 
+	relaxSpecForScan(spec)
+
 	hookPath := strings.TrimSpace(ctx.String("scan-seccomp-hook"))
 	if hookPath == "" {
 		for _, p := range defaultSeccompHookPaths {
@@ -231,6 +233,41 @@ func resolveCapableBinary(ctx *cli.Context) string {
 		}
 	}
 	return ""
+}
+
+// relaxSpecForScan turns off the host-supplied security policies that
+// would otherwise muffle the trace. We need every syscall and every
+// capability check to actually reach the kernel hooks our tracers ride
+// on, so seccomp/SELinux/NoNewPrivileges are stripped from the spec for
+// the duration of the scan run. The on-disk config.json is left alone;
+// finalizeSecurityScan only ever rewrites Process.Capabilities, so the
+// user's original seccomp/selinux/NNP survive into subsequent runs.
+//
+// AppArmor is handled separately further down in applySecurityScan: the
+// generated complain-mode profile is what gets wired in via
+// process.apparmorProfile, replacing whatever the user had set.
+func relaxSpecForScan(spec *specs.Spec) {
+	if spec == nil {
+		return
+	}
+	var cleared []string
+	if spec.Linux != nil && spec.Linux.Seccomp != nil {
+		spec.Linux.Seccomp = nil
+		cleared = append(cleared, "linux.seccomp")
+	}
+	if spec.Process != nil {
+		if spec.Process.SelinuxLabel != "" {
+			spec.Process.SelinuxLabel = ""
+			cleared = append(cleared, "process.selinuxLabel")
+		}
+		if spec.Process.NoNewPrivileges {
+			spec.Process.NoNewPrivileges = false
+			cleared = append(cleared, "process.noNewPrivileges")
+		}
+	}
+	if len(cleared) > 0 {
+		logrus.Infof("security-scan: relaxed in-memory spec fields: %s", strings.Join(cleared, ", "))
+	}
 }
 
 // resolveRuncSelfExec returns the absolute path of the running runc

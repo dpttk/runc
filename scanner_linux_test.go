@@ -3,6 +3,8 @@ package main
 import (
 	"strings"
 	"testing"
+
+	"github.com/opencontainers/runtime-spec/specs-go"
 )
 
 func TestSecurityScanAppArmorProfileName(t *testing.T) {
@@ -23,6 +25,39 @@ func TestSecurityScanAppArmorProfileName(t *testing.T) {
 	}
 	if !strings.HasPrefix(g, "runc_scan_") {
 		t.Fatalf("prefix: %q", g)
+	}
+}
+
+func TestRelaxSpecForScanClearsPolicy(t *testing.T) {
+	t.Parallel()
+	spec := &specs.Spec{
+		Linux: &specs.Linux{
+			Seccomp: &specs.LinuxSeccomp{DefaultAction: specs.ActErrno},
+		},
+		Process: &specs.Process{
+			SelinuxLabel:    "system_u:system_r:container_t:s0",
+			NoNewPrivileges: true,
+		},
+	}
+	relaxSpecForScan(spec)
+	if spec.Linux.Seccomp != nil {
+		t.Fatalf("seccomp must be nil after relax, got %+v", spec.Linux.Seccomp)
+	}
+	if spec.Process.SelinuxLabel != "" {
+		t.Fatalf("selinuxLabel must be empty after relax, got %q", spec.Process.SelinuxLabel)
+	}
+	if spec.Process.NoNewPrivileges {
+		t.Fatal("noNewPrivileges must be false after relax")
+	}
+}
+
+func TestRelaxSpecForScanIsIdempotent(t *testing.T) {
+	t.Parallel()
+	spec := &specs.Spec{Process: &specs.Process{}}
+	relaxSpecForScan(spec)
+	relaxSpecForScan(spec)
+	if spec.Process.NoNewPrivileges {
+		t.Fatal("idempotent relax should keep nnp=false")
 	}
 }
 
