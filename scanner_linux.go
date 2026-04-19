@@ -146,26 +146,41 @@ func applySecurityScan(spec *specs.Spec, ctx *cli.Context, containerID string) e
 	}
 	spec.Hooks.Poststart = append(spec.Hooks.Poststart, snapshotHook)
 
-	if capBin := resolveCapableBinary(ctx); capBin != "" {
-		traceEnv := []string{
-			"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-			envScanCapableBin + "=" + capBin,
-		}
-		spec.Hooks.Poststart = append(spec.Hooks.Poststart, specs.Hook{
-			Path: runcBin,
-			Args: []string{"runc", "scan-cap-trace-start"},
-			Env:  traceEnv,
-		})
-		// Stop hook is prepended so it runs before AA-unload and any
-		// other poststop hook a user (or we) might add later. The hook
-		// itself is also our barrier: by the time finalizeSecurityScan
-		// runs, the tracer has exited and capable-bpfcc.log is closed.
-		spec.Hooks.Poststop = append([]specs.Hook{{
-			Path: runcBin,
-			Args: []string{"runc", "scan-cap-trace-stop"},
-		}}, spec.Hooks.Poststop...)
-		logrus.Infof("security-scan: tracing used caps in background via %q (see generated/%s)", capBin, scanCapTraceLogFile)
+	capBin, bpftoolBin, err := requireCapTraceTools(ctx)
+	if err != nil {
+		return err
 	}
+	traceEnv := []string{
+		"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+		envScanCapableBin + "=" + capBin,
+		envScanBpftool + "=" + bpftoolBin,
+		envScanContainerID + "=" + containerID,
+	}
+	// Propagate the pin-root override the same way Path/binary paths
+	// flow through Hook.Env so integration tests can route bpftool to
+	// a tmp dir; production callers leave the var unset.
+	if v := os.Getenv("RUNC_SCAN_PIN_ROOT"); v != "" {
+		traceEnv = append(traceEnv, "RUNC_SCAN_PIN_ROOT="+v)
+	}
+	if v := os.Getenv("RUNC_STUB_BPFTOOL_LOG"); v != "" {
+		traceEnv = append(traceEnv, "RUNC_STUB_BPFTOOL_LOG="+v)
+	}
+	spec.Hooks.Poststart = append(spec.Hooks.Poststart, specs.Hook{
+		Path: runcBin,
+		Args: []string{"runc", "scan-cap-trace-start"},
+		Env:  traceEnv,
+	})
+	// Stop hook is prepended so it runs before AA-unload and any
+	// other poststop hook a user (or we) might add later. The hook
+	// itself is also our barrier: by the time finalizeSecurityScan
+	// runs, the tracer has exited and capable-bpfcc.log is closed.
+	// Same env so it can locate and unpin the per-container BPF map.
+	spec.Hooks.Poststop = append([]specs.Hook{{
+		Path: runcBin,
+		Args: []string{"runc", "scan-cap-trace-stop"},
+		Env:  traceEnv,
+	}}, spec.Hooks.Poststop...)
+	logrus.Infof("security-scan: cgroup-wide cap trace via %q with cgroupmap (see generated/%s)", capBin, scanCapTraceLogFile)
 
 	aaProfName := securityScanAppArmorProfileName(containerID)
 	aaProfPath := filepath.Join(genDir, "apparmor.profile")
@@ -212,20 +227,40 @@ func applySecurityScan(spec *specs.Spec, ctx *cli.Context, containerID string) e
 	return nil
 }
 
+// requireCapTraceTools resolves the binaries and host preconditions
+// the eBPF cgroup-wide cap trace needs and returns a clear error if
+// any of them is missing. The trace is mandatory in scan mode (see
+// review-scanner.mdc req[4]); without --cgroupmap support we cannot
+// guarantee that child processes are observed, so we refuse to run
+// rather than silently degrading. scripts/setup-env.sh from this repo
+// installs everything required.
+func requireCapTraceTools(ctx *cli.Context) (capBin, bpftoolBin string, err error) {
+	capBin = resolveCapableBinary(ctx)
+	if capBin == "" {
+		return "", "", fmt.Errorf("security-scan: capable-bpfcc not found; install bpfcc-tools or pass --scan-capable PATH (see scripts/setup-env.sh)")
+	}
+	if !capableSupportsCgroupmap(capBin) {
+		return "", "", fmt.Errorf("security-scan: %q has no --cgroupmap option; install a newer bpfcc-tools (see scripts/setup-env.sh)", capBin)
+	}
+	bpftoolBin = resolveBpftoolBinary(ctx)
+	if bpftoolBin == "" {
+		return "", "", fmt.Errorf("security-scan: bpftool not found; install linux-tools-common or pass --scan-bpftool PATH (see scripts/setup-env.sh)")
+	}
+	if !cgroupV2InUse() {
+		return "", "", fmt.Errorf("security-scan: requires cgroup v2 unified hierarchy; this host is on v1 or hybrid")
+	}
+	// Skip the bpffs precondition when tests have routed pinning to a
+	// regular dir. Production code never sets RUNC_SCAN_PIN_ROOT.
+	if os.Getenv("RUNC_SCAN_PIN_ROOT") == "" && !bpffsMounted() {
+		return "", "", fmt.Errorf("security-scan: /sys/fs/bpf is not bpffs; mount with `mount -t bpf bpffs /sys/fs/bpf` or run scripts/setup-env.sh")
+	}
+	return capBin, bpftoolBin, nil
+}
+
 func resolveCapableBinary(ctx *cli.Context) string {
 	p := strings.TrimSpace(ctx.String("scan-capable"))
 	if p != "" {
-		abs, err := filepath.Abs(p)
-		if err != nil {
-			logrus.Warnf("security-scan: scan-capable path: %v", err)
-			return ""
-		}
-		st, err := os.Stat(abs)
-		if err != nil || st.IsDir() || st.Mode()&0o111 == 0 {
-			logrus.Warnf("security-scan: --scan-capable %q is not an executable file", abs)
-			return ""
-		}
-		return abs
+		return validatedExecutable(p, "--scan-capable")
 	}
 	if path, err := exec.LookPath("capable-bpfcc"); err == nil {
 		return path
@@ -236,6 +271,36 @@ func resolveCapableBinary(ctx *cli.Context) string {
 		}
 	}
 	return ""
+}
+
+func resolveBpftoolBinary(ctx *cli.Context) string {
+	p := strings.TrimSpace(ctx.String("scan-bpftool"))
+	if p != "" {
+		return validatedExecutable(p, "--scan-bpftool")
+	}
+	if path, err := exec.LookPath("bpftool"); err == nil {
+		return path
+	}
+	for _, try := range []string{"/usr/sbin/bpftool", "/usr/local/sbin/bpftool"} {
+		if st, err := os.Stat(try); err == nil && !st.IsDir() && st.Mode()&0o111 != 0 {
+			return try
+		}
+	}
+	return ""
+}
+
+func validatedExecutable(p, flag string) string {
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		logrus.Warnf("security-scan: %s path: %v", flag, err)
+		return ""
+	}
+	st, err := os.Stat(abs)
+	if err != nil || st.IsDir() || st.Mode()&0o111 == 0 {
+		logrus.Warnf("security-scan: %s %q is not an executable file", flag, abs)
+		return ""
+	}
+	return abs
 }
 
 // relaxSpecForScan turns off the host-supplied security policies that

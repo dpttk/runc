@@ -63,6 +63,8 @@ const (
 	envScanAAProfilePath = "RUNC_AA_PROFILE_PATH"
 	envScanAALog         = "RUNC_AA_LOG"
 	envScanCapableBin    = "RUNC_SCAN_CAPABLE"
+	envScanBpftool       = "RUNC_SCAN_BPFTOOL"
+	envScanContainerID   = "RUNC_SCAN_CONTAINER_ID"
 )
 
 // Filenames for the cap trace state and output kept under
@@ -207,16 +209,18 @@ func runScanCapSnapshot() error {
 	return os.WriteFile(out, []byte(payload), 0o644)
 }
 
-// runScanCapTraceStart is the poststart hook that spawns the external
-// capable-bpfcc tracer in the background, attaches it to the container
-// init pid, and records its host pid into <bundle>/generated/.runc_cap_
-// trace.pid so scan-cap-trace-stop can shut it down later. The hook
-// returns immediately; the tracer is detached from this process group
-// so it survives the hook's exit and gets reparented to init.
+// runScanCapTraceStart is the poststart hook that builds the per-
+// container BPF cgroup-filter map and spawns capable-bpfcc with
+// --cgroupmap pointing at it, so the tracer captures cap_capable
+// events for every task in the container's cgroup, including children
+// spawned after start. The tracer host pid lands in <bundle>/generated/
+// .runc_cap_trace.pid for scan-cap-trace-stop to find.
 //
-// If RUNC_SCAN_CAPABLE is unset or the binary is missing, the hook is a
-// no-op: presence of the tracer is optional and applySecurityScan only
-// installs this hook in the first place when a binary was located.
+// All the preconditions (capable-bpfcc availability, --cgroupmap
+// support, bpftool, cgroup v2, bpffs) have already been hard-checked
+// by applySecurityScan before this hook was even installed; if any
+// env var is missing here, that is a programming bug, not a runtime
+// configuration issue, and the hook returns an error.
 func runScanCapTraceStart() error {
 	st, err := readHookState()
 	if err != nil {
@@ -230,16 +234,17 @@ func runScanCapTraceStart() error {
 	pidPath := filepath.Join(gen, scanCapTracePidFile)
 
 	bin := strings.TrimSpace(os.Getenv(envScanCapableBin))
-	if bin == "" {
-		return nil
-	}
-	if st.Pid <= 0 {
-		appendTraceLog(logPath, "scan-cap-trace-start: hook state had no pid; skipping")
-		return nil
-	}
-	if info, err := os.Stat(bin); err != nil || info.IsDir() || info.Mode()&0o111 == 0 {
-		appendTraceLog(logPath, fmt.Sprintf("scan-cap-trace-start: %s not executable: %v", bin, err))
-		return nil
+	bpftool := strings.TrimSpace(os.Getenv(envScanBpftool))
+	containerID := strings.TrimSpace(os.Getenv(envScanContainerID))
+	switch {
+	case bin == "":
+		return fmt.Errorf("scan-cap-trace-start: %s not set", envScanCapableBin)
+	case bpftool == "":
+		return fmt.Errorf("scan-cap-trace-start: %s not set", envScanBpftool)
+	case containerID == "":
+		return fmt.Errorf("scan-cap-trace-start: %s not set", envScanContainerID)
+	case st.Pid <= 0:
+		return fmt.Errorf("scan-cap-trace-start: hook state had no pid")
 	}
 
 	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
@@ -247,16 +252,30 @@ func runScanCapTraceStart() error {
 		return fmt.Errorf("open trace log: %w", err)
 	}
 	defer logFile.Close()
-	fmt.Fprintf(logFile, "---- start %s pid=%d via %s ----\n",
-		time.Now().UTC().Format(time.RFC3339), st.Pid, bin)
 
-	cmd := exec.Command(bin, "-p", strconv.Itoa(st.Pid))
+	cgPath, cgID, err := resolveContainerCgroupV2(st.Pid)
+	if err != nil {
+		return fmt.Errorf("scan-cap-trace-start: resolve cgroup: %w", err)
+	}
+	fmt.Fprintf(logFile, "---- start %s pid=%d cgroup=%s id=%d via %s ----\n",
+		time.Now().UTC().Format(time.RFC3339), st.Pid, cgPath, cgID, bin)
+
+	m := newCgroupFilterMap(bpftool, containerID)
+	if err := m.Create(); err != nil {
+		return fmt.Errorf("scan-cap-trace-start: %w", err)
+	}
+	if err := m.AddCgroup(cgID); err != nil {
+		_ = m.Teardown()
+		return fmt.Errorf("scan-cap-trace-start: %w", err)
+	}
+
+	cmd := exec.Command(bin, "--cgroupmap", m.pinPath)
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := cmd.Start(); err != nil {
-		fmt.Fprintf(logFile, "scan-cap-trace-start: spawn failed: %v\n", err)
-		return nil
+		_ = m.Teardown()
+		return fmt.Errorf("scan-cap-trace-start: spawn capable-bpfcc: %w", err)
 	}
 	tracerPid := cmd.Process.Pid
 	if err := cmd.Process.Release(); err != nil {
@@ -266,15 +285,20 @@ func runScanCapTraceStart() error {
 	if err := os.WriteFile(pidPath, []byte(strconv.Itoa(tracerPid)+"\n"), 0o644); err != nil {
 		return fmt.Errorf("write pid file: %w", err)
 	}
-	fmt.Fprintf(logFile, "scan-cap-trace-start: tracer pid=%d\n", tracerPid)
+	fmt.Fprintf(logFile, "scan-cap-trace-start: tracer pid=%d cgroupmap=%s\n", tracerPid, m.pinPath)
 	return nil
 }
 
 // runScanCapTraceStop is the poststop hook that shuts down the tracer
-// previously started by runScanCapTraceStart. It also acts as the
-// barrier that finalizeSecurityScan relies on: by the time this hook
-// returns, the tracer has exited and capable-bpfcc.log is closed, so
-// the cap merge that runs straight after sees a complete file.
+// previously started by runScanCapTraceStart and removes its pinned
+// cgroup-filter map from bpffs. It is also the barrier that
+// finalizeSecurityScan relies on: by the time this hook returns, the
+// tracer has exited and capable-bpfcc.log is closed, so the cap merge
+// that runs straight after sees a complete file.
+//
+// Pid-file absence (e.g. start hook never ran, or already cleaned up)
+// is treated as a no-op so we do not break container teardown when
+// the tracer never came up.
 func runScanCapTraceStop() error {
 	st, err := readHookState()
 	if err != nil {
@@ -287,6 +311,17 @@ func runScanCapTraceStop() error {
 	pidPath := filepath.Join(gen, scanCapTracePidFile)
 	logPath := filepath.Join(gen, scanCapTraceLogFile)
 	defer os.Remove(pidPath)
+
+	containerID := strings.TrimSpace(os.Getenv(envScanContainerID))
+	bpftool := strings.TrimSpace(os.Getenv(envScanBpftool))
+	defer func() {
+		if containerID == "" || bpftool == "" {
+			return
+		}
+		if err := newCgroupFilterMap(bpftool, containerID).Teardown(); err != nil {
+			appendTraceLog(logPath, fmt.Sprintf("scan-cap-trace-stop: teardown map: %v", err))
+		}
+	}()
 
 	raw, err := os.ReadFile(pidPath)
 	if err != nil {
