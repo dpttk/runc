@@ -1,0 +1,211 @@
+#!/usr/bin/env bash
+# Provision a Debian/Ubuntu host for runc --security-scan.
+#
+# What it does:
+#   1. Installs the eBPF, AppArmor, build, and runtime dependencies the
+#      scanner needs (capable-bpfcc with --cgroupmap, bpftool,
+#      apparmor_parser, libseccomp, oci-seccomp-bpf-hook build deps).
+#   2. Mounts bpffs at /sys/fs/bpf and persists it in /etc/fstab so a
+#      reboot does not silently break --security-scan.
+#   3. Verifies the host is on cgroup v2 (unified hierarchy). v1/hybrid
+#      hosts are rejected because cgroupmap-based filtering relies on
+#      bpf_get_current_cgroup_id(), which is well-defined only on v2.
+#   4. Verifies that bpftool and capable-bpfcc --cgroupmap are present.
+#   5. Creates an unprivileged "runcscan" system user (uid:gid 65532)
+#      and writes /etc/profile.d/runc-scan.sh so bundles and CI jobs
+#      can reference it as the container init's process.user.uid for
+#      the recommended "non-root container so cap_capable() fires"
+#      configuration noted by warnIfRootInScan in scanner_linux.go.
+#
+# Idempotent. Re-runs are cheap; nothing is removed and nothing is
+# clobbered if it already looks right. Exit codes are non-zero only for
+# precondition failures (wrong distro, no cgroup v2, etc).
+#
+# Used directly by humans on a fresh box and by the thesis-ci-repo
+# Ansible playbook (roles/scanner_host) to provision the self-hosted
+# runner.
+
+set -euo pipefail
+
+SCAN_USER="${SCAN_USER:-runcscan}"
+SCAN_UID="${SCAN_UID:-65532}"
+SCAN_GID="${SCAN_GID:-65532}"
+PROFILE_FILE="/etc/profile.d/runc-scan.sh"
+APT_PACKAGES=(
+	# eBPF / BCC
+	bpfcc-tools
+	libbpfcc
+	python3-bpfcc
+	libbpfcc-dev
+	libbpf-dev
+	# bpftool
+	linux-tools-common
+	linux-tools-generic
+	# AppArmor userspace
+	apparmor
+	apparmor-utils
+	# Build deps for runc itself + oci-seccomp-bpf-hook
+	build-essential
+	pkg-config
+	git
+	clang
+	llvm
+	libseccomp-dev
+	libelf-dev
+	# Misc
+	jq
+	ca-certificates
+)
+
+log() { printf '[setup-scan-host] %s\n' "$*"; }
+fail() {
+	printf '[setup-scan-host] error: %s\n' "$*" >&2
+	exit 1
+}
+
+require_root() {
+	[[ $EUID -eq 0 ]] || fail "must run as root (use sudo)"
+}
+
+detect_distro() {
+	[[ -r /etc/os-release ]] || fail "/etc/os-release missing; unsupported distro"
+	# shellcheck disable=SC1091
+	. /etc/os-release
+	case "${ID:-}" in
+	ubuntu | debian) ;;
+	*)
+		fail "unsupported distro id=${ID:-?}; this script targets Debian/Ubuntu only"
+		;;
+	esac
+	log "distro: ${PRETTY_NAME:-${ID}}"
+}
+
+install_packages() {
+	local kver
+	kver="$(uname -r)"
+	# Try to grab the kernel-matching linux-tools, which carries bpftool
+	# on Ubuntu. It is OK if this exact metapackage is missing on the
+	# host; linux-tools-generic still drags in a usable bpftool.
+	local extra=()
+	if apt-cache show "linux-tools-${kver}" >/dev/null 2>&1; then
+		extra+=("linux-tools-${kver}")
+	else
+		log "linux-tools-${kver} not in apt cache, relying on linux-tools-generic"
+	fi
+	export DEBIAN_FRONTEND=noninteractive
+	apt-get update
+	apt-get install -y "${APT_PACKAGES[@]}" "${extra[@]}"
+}
+
+mount_bpffs() {
+	if mountpoint -q /sys/fs/bpf; then
+		log "bpffs already mounted at /sys/fs/bpf"
+	else
+		mount -t bpf bpffs /sys/fs/bpf
+		log "mounted bpffs at /sys/fs/bpf"
+	fi
+	if ! grep -qE '^[^#].*\s/sys/fs/bpf\s+bpf' /etc/fstab; then
+		printf 'bpffs /sys/fs/bpf bpf defaults 0 0\n' >>/etc/fstab
+		log "added bpffs entry to /etc/fstab"
+	fi
+}
+
+verify_cgroup_v2() {
+	if [[ ! -r /sys/fs/cgroup/cgroup.controllers ]]; then
+		fail "cgroup v2 (unified hierarchy) not in use; --security-scan requires v2. Add 'systemd.unified_cgroup_hierarchy=1' to the kernel cmdline."
+	fi
+	log "cgroup v2: ok"
+}
+
+verify_capable_cgroupmap() {
+	command -v capable-bpfcc >/dev/null 2>&1 ||
+		fail "capable-bpfcc missing after install; check apt output for bpfcc-tools"
+	if ! capable-bpfcc --help 2>&1 | grep -q -- '--cgroupmap'; then
+		fail "installed capable-bpfcc has no --cgroupmap; bpfcc-tools is too old (need >=0.20)"
+	fi
+	log "capable-bpfcc --cgroupmap: ok ($(command -v capable-bpfcc))"
+}
+
+verify_bpftool() {
+	if ! command -v bpftool >/dev/null 2>&1; then
+		# Some Ubuntu versions install bpftool under /usr/sbin only.
+		[[ -x /usr/sbin/bpftool ]] || fail "bpftool missing; check linux-tools install"
+	fi
+	log "bpftool: ok ($(command -v bpftool || echo /usr/sbin/bpftool))"
+}
+
+verify_apparmor() {
+	command -v apparmor_parser >/dev/null 2>&1 ||
+		fail "apparmor_parser missing after install"
+	log "apparmor_parser: ok ($(command -v apparmor_parser))"
+}
+
+create_scan_user() {
+	if id -u "${SCAN_USER}" >/dev/null 2>&1; then
+		log "user ${SCAN_USER} already exists (uid=$(id -u "${SCAN_USER}"))"
+		return
+	fi
+	groupadd --system --gid "${SCAN_GID}" "${SCAN_USER}"
+	useradd --system --uid "${SCAN_UID}" --gid "${SCAN_GID}" \
+		--no-create-home --shell /usr/sbin/nologin \
+		--comment "runc --security-scan unprivileged container user" \
+		"${SCAN_USER}"
+	log "created user ${SCAN_USER} uid=${SCAN_UID}"
+}
+
+write_env_hint() {
+	local body
+	body="$(
+		cat <<EOF
+# Generated by runc/script/setup-scan-host.sh.
+# Recommended uid for the container init process when running with
+# --security-scan; root tasks bypass many cap_capable() checks and
+# would shorten the trace. Reference this in OCI bundles via
+# spec.process.user.uid (or :uid:gid pair).
+export RUNC_SCAN_USER=${SCAN_USER}
+export RUNC_SCAN_UID=${SCAN_UID}
+export RUNC_SCAN_GID=${SCAN_GID}
+EOF
+	)"
+	if [[ -r ${PROFILE_FILE} ]] && diff -q <(printf '%s\n' "${body}") "${PROFILE_FILE}" >/dev/null 2>&1; then
+		log "${PROFILE_FILE} already up to date"
+		return
+	fi
+	printf '%s\n' "${body}" >"${PROFILE_FILE}"
+	chmod 0644 "${PROFILE_FILE}"
+	log "wrote ${PROFILE_FILE}"
+}
+
+summary() {
+	cat <<EOF
+
+[setup-scan-host] host is ready for runc --security-scan.
+  cgroup:        v2 unified
+  bpffs:         /sys/fs/bpf (persistent)
+  capable-bpfcc: $(command -v capable-bpfcc)
+  bpftool:       $(command -v bpftool || echo /usr/sbin/bpftool)
+  apparmor:      $(aa-status --enabled >/dev/null 2>&1 && echo enabled || echo "installed but disabled - consider enabling in kernel cmdline")
+  scan user:     ${SCAN_USER} uid=${SCAN_UID} gid=${SCAN_GID}
+  env hint:      ${PROFILE_FILE}
+
+Next steps:
+  - Build runc: make
+  - Smoke test:  sudo runc run --security-scan <bundle> myctr
+EOF
+}
+
+main() {
+	require_root
+	detect_distro
+	install_packages
+	mount_bpffs
+	verify_cgroup_v2
+	verify_capable_cgroupmap
+	verify_bpftool
+	verify_apparmor
+	create_scan_user
+	write_env_hint
+	summary
+}
+
+main "$@"
