@@ -59,13 +59,6 @@ func defaultDockerCapabilities() []string {
 	}
 }
 
-// DefaultMinimalCapabilities returns the minimal capability baseline used by
-// the security scanner. Our new default is zero capabilities, which serves
-// as the true minimum baseline for trace-based profile generation.
-func DefaultMinimalCapabilities() []string {
-	return []string{}
-}
-
 // applyCapabilitiesOverride modifies the spec to use a preset capability set
 // based on the selected override mode:
 //   - "runc":   3-capability set (upstream runc default)

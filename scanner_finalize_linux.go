@@ -7,10 +7,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
-	"strconv"
 	"strings"
 
-	"github.com/moby/sys/capability"
 	"github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/sirupsen/logrus"
 	"github.com/urfave/cli"
@@ -18,10 +16,22 @@ import (
 
 var capNameRegexp = regexp.MustCompile(`\b(CAP_[A-Z0-9_]+)\b`)
 
-// finalizeSecurityScan updates bundle/config.json with a merged capability set
-// after a completed container run (no runc transport error) when --security-scan
-// was used, if the merged set exceeds the reduced default baseline and differs
-// from config on disk. startContainer only calls this when r.run returns nil error.
+// finalizeSecurityScan rewrites bundle/config.json's process.capabilities
+// with the set actually observed during the just-finished --security-scan
+// run. The semantic is "narrow only": the existing capabilities in the
+// on-disk spec are NEVER unioned with the trace; whatever capable-bpfcc
+// recorded is the new ground truth. An empty trace yields an empty cap
+// set, which is precisely the principle of least privilege when nothing
+// privileged was attempted.
+//
+// We deliberately ignore /proc/<pid>/status (the snapshot kept under
+// generated/capabilities-from-proc-status.txt). In scan mode the
+// scanner already grants every CAP_* the kernel knows about, so the
+// snapshot reflects what we handed out, not what was used. The status
+// file remains as a diagnostic artifact only.
+//
+// startContainer only invokes this when r.run returns nil, so partial
+// runs do not silently overwrite config.json with an incomplete set.
 func finalizeSecurityScan(ctx *cli.Context, action CtAct) error {
 	if !ctx.Bool("security-scan") || action != CT_ACT_RUN {
 		return nil
@@ -37,8 +47,7 @@ func finalizeSecurityScan(ctx *cli.Context, action CtAct) error {
 	genDir := filepath.Join(bundleDir, "generated")
 
 	discovered := capSet{}
-	discovered.addFromList(parseCapsFromFile(filepath.Join(genDir, "capable-bpfcc.log")))
-	discovered.addFromList(parseCapsFromStatusFile(filepath.Join(genDir, "capabilities-from-proc-status.txt")))
+	discovered.addFromList(parseCapsFromFile(filepath.Join(genDir, scanCapTraceLogFile)))
 
 	cfgPath := filepath.Join(bundleDir, specConfig)
 	raw, err := os.ReadFile(cfgPath)
@@ -53,24 +62,13 @@ func finalizeSecurityScan(ctx *cli.Context, action CtAct) error {
 	if spec.Process != nil && spec.Process.Capabilities != nil {
 		current.addFromList(spec.Process.Capabilities.Bounding)
 	}
-	minimal := capSetFromList(DefaultMinimalCapabilities())
-	if current.len() == 0 {
-		current = minimal.clone()
-	}
 
-	// Do not shrink below what is already in config; merge traced caps in.
-	out := minimal.clone()
-	out.merge(discovered)
-	out.merge(current)
-
-	if out.equals(minimal) {
-		return nil
-	}
-	if out.equals(current) {
+	if discovered.equals(current) {
+		logrus.Infof("security-scan: observed cap set already matches %s (%d caps); leaving config untouched", cfgPath, discovered.len())
 		return nil
 	}
 
-	names := out.sortedNames()
+	names := discovered.sortedNames()
 	if spec.Process == nil {
 		spec.Process = &specs.Process{}
 	}
@@ -95,7 +93,11 @@ func finalizeSecurityScan(ctx *cli.Context, action CtAct) error {
 		_ = os.Remove(tmp)
 		return fmt.Errorf("security-scan finalize: rename: %w", err)
 	}
-	logrus.Infof("security-scan: updated %q with %d capabilities (merged trace + reduced default)", cfgPath, len(names))
+	if len(names) == 0 {
+		logrus.Infof("security-scan: trace recorded no capability checks; wrote empty cap set into %q", cfgPath)
+	} else {
+		logrus.Infof("security-scan: narrowed %q to %d observed capabilities: %s", cfgPath, len(names), strings.Join(names, ","))
+	}
 	return nil
 }
 
@@ -114,65 +116,7 @@ func parseCapsFromFile(path string) []string {
 	return seen.sortedNames()
 }
 
-func parseCapsFromStatusFile(path string) []string {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return nil
-	}
-	for _, line := range strings.Split(string(b), "\n") {
-		if strings.HasPrefix(strings.TrimSpace(line), "CapBnd:") {
-			return capsFromCapBndLine(line)
-		}
-	}
-	return nil
-}
-
-func capsFromCapBndLine(line string) []string {
-	i := strings.Index(line, "CapBnd:")
-	if i < 0 {
-		return nil
-	}
-	rest := line[i+len("CapBnd:"):]
-	fields := strings.Fields(rest)
-	lastN := 63
-	if last, err := capability.LastCap(); err == nil {
-		lastN = int(last)
-	}
-	var out []string
-	for wi, f := range fields {
-		v, err := strconv.ParseUint(f, 16, 64)
-		if err != nil {
-			continue
-		}
-		for bit := 0; bit < 64; bit++ {
-			if v&(1<<uint(bit)) == 0 {
-				continue
-			}
-			ci := wi*64 + bit
-			if ci < 0 || ci > lastN {
-				continue
-			}
-			out = append(out, ociCapName(capability.Cap(ci)))
-		}
-	}
-	return out
-}
-
 type capSet map[string]struct{}
-
-func capSetFromList(names []string) capSet {
-	s := capSet{}
-	s.addFromList(names)
-	return s
-}
-
-func (s capSet) clone() capSet {
-	t := capSet{}
-	for k := range s {
-		t[k] = struct{}{}
-	}
-	return t
-}
 
 func (s capSet) add(name string) {
 	name = strings.TrimSpace(name)
@@ -185,12 +129,6 @@ func (s capSet) add(name string) {
 func (s capSet) addFromList(names []string) {
 	for _, n := range names {
 		s.add(n)
-	}
-}
-
-func (s capSet) merge(o capSet) {
-	for k := range o {
-		s[k] = struct{}{}
 	}
 }
 
