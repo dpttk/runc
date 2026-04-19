@@ -1,15 +1,58 @@
 package main
 
 import (
+	"bufio"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/sirupsen/logrus"
 	"github.com/urfave/cli"
 )
+
+// ociHookState matches the OCI runtime spec hook input passed on stdin
+// (Container State). Only the fields the scanner needs are decoded; the
+// rest is ignored by encoding/json.
+type ociHookState struct {
+	OCIVersion string            `json:"ociVersion"`
+	ID         string            `json:"id"`
+	Status     string            `json:"status"`
+	Pid        int               `json:"pid"`
+	Bundle     string            `json:"bundle"`
+	Annot      map[string]string `json:"annotations,omitempty"`
+}
+
+func readHookState() (*ociHookState, error) {
+	raw, err := io.ReadAll(os.Stdin)
+	if err != nil {
+		return nil, fmt.Errorf("read hook state: %w", err)
+	}
+	if len(raw) == 0 {
+		return nil, errors.New("hook state is empty")
+	}
+	st := &ociHookState{}
+	if err := json.Unmarshal(raw, st); err != nil {
+		return nil, fmt.Errorf("parse hook state: %w", err)
+	}
+	if st.Bundle == "" {
+		return nil, errors.New("hook state has no bundle")
+	}
+	return st, nil
+}
+
+func bundleGenDir(bundle string) (string, error) {
+	dir := filepath.Join(bundle, "generated")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", fmt.Errorf("mkdir %s: %w", dir, err)
+	}
+	return dir, nil
+}
 
 // Env vars used to pass parameters from the OCI hook spec into the
 // hidden self-exec subcommands. Kept stable so config-on-disk does not
@@ -103,6 +146,49 @@ func openAALog(path string) (*os.File, error) {
 	return f, nil
 }
 
+// runScanCapSnapshot is the poststart hook that captures the Cap* lines
+// from /proc/<init>/status into <bundle>/generated/capabilities-from-
+// proc-status.txt. It exits 0 even on partial failure: the snapshot is
+// only one of several inputs to finalizeSecurityScan and a missing file
+// just means the cap merge below will rely on the BCC trace.
+func runScanCapSnapshot() error {
+	st, err := readHookState()
+	if err != nil {
+		return err
+	}
+	gen, err := bundleGenDir(st.Bundle)
+	if err != nil {
+		return err
+	}
+	out := filepath.Join(gen, "capabilities-from-proc-status.txt")
+
+	if st.Pid <= 0 {
+		return os.WriteFile(out, []byte("security-scan: hook state had no pid\n"), 0o644)
+	}
+	statusPath := fmt.Sprintf("/proc/%d/status", st.Pid)
+	body, err := os.ReadFile(statusPath)
+	if err != nil {
+		msg := fmt.Sprintf("security-scan: %s not readable: %v\n", statusPath, err)
+		return os.WriteFile(out, []byte(msg), 0o644)
+	}
+	var lines []string
+	sc := bufio.NewScanner(strings.NewReader(string(body)))
+	for sc.Scan() {
+		l := sc.Text()
+		if strings.HasPrefix(l, "Cap") {
+			lines = append(lines, l)
+		}
+	}
+	if err := sc.Err(); err != nil {
+		return fmt.Errorf("scan status: %w", err)
+	}
+	payload := strings.Join(lines, "\n")
+	if payload != "" {
+		payload += "\n"
+	}
+	return os.WriteFile(out, []byte(payload), 0o644)
+}
+
 
 // Internal OCI hook subcommands used by --security-scan. These are hidden
 // from --help and are invoked as Hook.Path = <runc binary> with the runc
@@ -133,9 +219,7 @@ var scanCapSnapshotHookCommand = cli.Command{
 	Usage:  "internal: snapshot /proc/<pid>/status Cap* lines for --security-scan (poststart hook)",
 	Hidden: true,
 	Action: func(ctx *cli.Context) error {
-		_, _ = io.Copy(io.Discard, os.Stdin)
-		logrus.Debug("scan-cap-snapshot: not yet wired")
-		return nil
+		return runScanCapSnapshot()
 	},
 }
 

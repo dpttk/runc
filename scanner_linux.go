@@ -86,6 +86,11 @@ func applySecurityScan(spec *specs.Spec, ctx *cli.Context, containerID string) e
 		return fmt.Errorf("security-scan: mkdir generated: %w", err)
 	}
 
+	runcBin, err := resolveRuncSelfExec()
+	if err != nil {
+		return err
+	}
+
 	hookPath := strings.TrimSpace(ctx.String("scan-seccomp-hook"))
 	if hookPath == "" {
 		for _, p := range defaultSeccompHookPaths {
@@ -130,23 +135,29 @@ func applySecurityScan(spec *specs.Spec, ctx *cli.Context, containerID string) e
 	}
 	spec.Hooks.Prestart = append(spec.Hooks.Prestart, secHook)
 
-	capScriptPath := filepath.Join(genDir, ".runc_cap_hook.sh")
-	capBody := buildCapHookScript(bundleDir)
-	if err := os.WriteFile(capScriptPath, []byte(capBody), 0o755); err != nil {
-		return fmt.Errorf("security-scan: write poststart cap hook: %w", err)
+	snapshotHook := specs.Hook{
+		Path: runcBin,
+		Args: []string{"runc", "scan-cap-snapshot"},
 	}
-	postHook := specs.Hook{
-		Path: capScriptPath,
-		Args: []string{filepath.Base(capScriptPath)},
-	}
+	spec.Hooks.Poststart = append(spec.Hooks.Poststart, snapshotHook)
+
 	if capBin := resolveCapableBinary(ctx); capBin != "" {
-		postHook.Env = []string{
-			"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-			"RUNC_SCAN_CAPABLE=" + capBin,
+		traceScriptPath := filepath.Join(genDir, ".runc_cap_trace.sh")
+		traceBody := buildCapTraceScript(bundleDir)
+		if err := os.WriteFile(traceScriptPath, []byte(traceBody), 0o755); err != nil {
+			return fmt.Errorf("security-scan: write poststart cap trace: %w", err)
 		}
+		traceHook := specs.Hook{
+			Path: traceScriptPath,
+			Args: []string{filepath.Base(traceScriptPath)},
+			Env: []string{
+				"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+				"RUNC_SCAN_CAPABLE=" + capBin,
+			},
+		}
+		spec.Hooks.Poststart = append(spec.Hooks.Poststart, traceHook)
 		logrus.Infof("security-scan: tracing used caps in background via %q (see generated/capable-bpfcc.log)", capBin)
 	}
-	spec.Hooks.Poststart = append(spec.Hooks.Poststart, postHook)
 
 	aaProfName := securityScanAppArmorProfileName(containerID)
 	aaProfPath := filepath.Join(genDir, "apparmor.profile")
@@ -159,14 +170,6 @@ func applySecurityScan(spec *specs.Spec, ctx *cli.Context, containerID string) e
 	}
 
 	if apparmor.IsEnabled() {
-		runcBin, err := os.Executable()
-		if err != nil {
-			return fmt.Errorf("security-scan: resolve runc binary: %w", err)
-		}
-		runcBin, err = filepath.Abs(runcBin)
-		if err != nil {
-			return fmt.Errorf("security-scan: abs runc binary: %w", err)
-		}
 		aaLog := filepath.Join(genDir, "apparmor-load.log")
 		env := []string{
 			"PATH=/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/sbin:/usr/local/bin",
@@ -231,11 +234,16 @@ func shellSingleQuote(s string) string {
 	return `'` + strings.ReplaceAll(s, `'`, `'\''`) + `'`
 }
 
-func buildCapHookScript(bundleDir string) string {
+// buildCapTraceScript returns a tiny /bin/sh wrapper that spawns the
+// external capable-bpfcc tracer in the background. The /proc/<pid>/status
+// snapshot has already been moved to the scan-cap-snapshot subcommand;
+// this script is the last shell stub remaining in the bundle and will be
+// replaced by scan-cap-trace-start in the next commit.
+//
+// In fmt.Sprintf, %% becomes a literal % in the emitted shell script, so
+// %%s yields shell printf '%s' (correct for /bin/sh).
+func buildCapTraceScript(bundleDir string) string {
 	q := shellSingleQuote(bundleDir)
-	// In fmt.Sprintf, %% becomes a literal % in the output shell script, so %%s
-	// here yields the shell snippet printf '%s' (correct for /bin/sh). A single
-	// %s would be consumed by Go as a format verb and break the lone bundle=%s arg.
 	return fmt.Sprintf(`#!/bin/sh
 set -e
 state=$(cat)
@@ -243,18 +251,29 @@ bundle=%s
 gen="$bundle/generated"
 mkdir -p "$gen"
 pid=$(printf '%%s' "$state" | sed -n 's/.*"pid": *\([0-9][0-9]*\).*/\1/p' | head -n1)
-if [ -z "$pid" ]; then
-  printf 'security-scan: could not parse pid from hook state\n' >>"$gen/capabilities-from-proc-status.txt"
+if [ -z "$pid" ] || [ -z "${RUNC_SCAN_CAPABLE:-}" ] || [ ! -x "$RUNC_SCAN_CAPABLE" ]; then
   exit 0
 fi
-if [ -r "/proc/$pid/status" ]; then
-  grep '^Cap' "/proc/$pid/status" >"$gen/capabilities-from-proc-status.txt" || true
-else
-  printf 'security-scan: /proc/%%s/status not readable\n' "$pid" >"$gen/capabilities-from-proc-status.txt"
-fi
-if [ -n "${RUNC_SCAN_CAPABLE:-}" ] && [ -x "$RUNC_SCAN_CAPABLE" ]; then
-  : >>"$gen/capable-bpfcc.log"
-  nohup "$RUNC_SCAN_CAPABLE" -p "$pid" >>"$gen/capable-bpfcc.log" 2>&1 &
-fi
+: >>"$gen/capable-bpfcc.log"
+nohup "$RUNC_SCAN_CAPABLE" -p "$pid" >>"$gen/capable-bpfcc.log" 2>&1 &
 `, q)
+}
+
+// resolveRuncSelfExec returns the absolute path of the running runc
+// binary so it can be wired as Hook.Path on OCI hooks. We refuse to
+// install hooks pointing at a non-existent file so misconfigured runs
+// fail at scan setup rather than at hook invocation time.
+func resolveRuncSelfExec() (string, error) {
+	bin, err := os.Executable()
+	if err != nil {
+		return "", fmt.Errorf("security-scan: resolve runc binary: %w", err)
+	}
+	bin, err = filepath.Abs(bin)
+	if err != nil {
+		return "", fmt.Errorf("security-scan: abs runc binary: %w", err)
+	}
+	if st, err := os.Stat(bin); err != nil || st.IsDir() || st.Mode()&0o111 == 0 {
+		return "", fmt.Errorf("security-scan: runc self-exec %q not usable as hook", bin)
+	}
+	return bin, nil
 }

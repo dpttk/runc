@@ -38,17 +38,20 @@ func TestBuildAppArmorProfileSourceContainsName(t *testing.T) {
 	}
 }
 
-func TestBuildCapHookScriptPrintfFormat(t *testing.T) {
+func TestBuildCapTraceScriptPrintfFormat(t *testing.T) {
 	t.Parallel()
-	sh := buildCapHookScript("/tmp/bundle")
+	sh := buildCapTraceScript("/tmp/bundle")
 	// Go fmt.Sprintf turns %% into % in the emitted shell; shell must see printf '%s'.
 	if !strings.Contains(sh, `printf '%s' "$state"`) {
 		t.Fatalf("missing shell printf for state; script:\n%s", sh)
 	}
-	if !strings.Contains(sh, `printf 'security-scan: /proc/%s/status not readable\n' "$pid"`) {
-		t.Fatalf("missing shell printf for pid in error path; script:\n%s", sh)
-	}
 	if strings.Contains(sh, `printf '%%s'`) {
 		t.Fatalf("literal %%s must not appear in shell output (would be a Go fmt bug); script:\n%s", sh)
+	}
+	if !strings.Contains(sh, `nohup "$RUNC_SCAN_CAPABLE"`) {
+		t.Fatalf("missing nohup spawn of capable; script:\n%s", sh)
+	}
+	if strings.Contains(sh, `/proc/`) {
+		t.Fatalf("trace script must not read /proc anymore (snapshot moved to subcommand); script:\n%s", sh)
 	}
 }
