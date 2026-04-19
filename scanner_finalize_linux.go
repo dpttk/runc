@@ -152,7 +152,7 @@ func capsFromCapBndLine(line string) []string {
 			if ci < 0 || ci > lastN {
 				continue
 			}
-			out = append(out, capability.Cap(ci).String())
+			out = append(out, ociCapName(capability.Cap(ci)))
 		}
 	}
 	return out

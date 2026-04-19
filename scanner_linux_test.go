@@ -61,6 +61,44 @@ func TestRelaxSpecForScanIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestGrantAllCapsForScanFillsAllBuckets(t *testing.T) {
+	t.Parallel()
+	all := allKnownCapabilityNames()
+	if len(all) == 0 {
+		t.Skip("kernel reports no capabilities; nothing to assert")
+	}
+	for _, name := range all {
+		if !strings.HasPrefix(name, "CAP_") {
+			t.Fatalf("allKnownCapabilityNames returned non-CAP entry %q", name)
+		}
+	}
+	spec := &specs.Spec{Process: &specs.Process{
+		Capabilities: &specs.LinuxCapabilities{Bounding: []string{"CAP_KILL"}},
+	}}
+	grantAllCapsForScan(spec)
+	caps := spec.Process.Capabilities
+	if len(caps.Bounding) != len(all) || len(caps.Effective) != len(all) ||
+		len(caps.Permitted) != len(all) || len(caps.Inheritable) != len(all) ||
+		len(caps.Ambient) != len(all) {
+		t.Fatalf("expected all five buckets to hold %d caps, got %d/%d/%d/%d/%d",
+			len(all),
+			len(caps.Bounding), len(caps.Effective), len(caps.Permitted),
+			len(caps.Inheritable), len(caps.Ambient))
+	}
+}
+
+func TestGrantAllCapsForScanInitialisesProcess(t *testing.T) {
+	t.Parallel()
+	if len(allKnownCapabilityNames()) == 0 {
+		t.Skip("kernel reports no capabilities; nothing to assert")
+	}
+	spec := &specs.Spec{}
+	grantAllCapsForScan(spec)
+	if spec.Process == nil || spec.Process.Capabilities == nil {
+		t.Fatal("expected Process.Capabilities to be initialised")
+	}
+}
+
 func TestBuildAppArmorProfileSourceContainsName(t *testing.T) {
 	t.Parallel()
 	name := "runc_scan_test"

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/moby/sys/capability"
 	"github.com/opencontainers/runc/libcontainer/apparmor"
 	"github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/sirupsen/logrus"
@@ -92,6 +93,8 @@ func applySecurityScan(spec *specs.Spec, ctx *cli.Context, containerID string) e
 	}
 
 	relaxSpecForScan(spec)
+	grantAllCapsForScan(spec)
+	warnIfRootInScan(spec)
 
 	hookPath := strings.TrimSpace(ctx.String("scan-seccomp-hook"))
 	if hookPath == "" {
@@ -268,6 +271,75 @@ func relaxSpecForScan(spec *specs.Spec) {
 	if len(cleared) > 0 {
 		logrus.Infof("security-scan: relaxed in-memory spec fields: %s", strings.Join(cleared, ", "))
 	}
+}
+
+// grantAllCapsForScan replaces process.capabilities with the full set
+// of capabilities the running kernel knows about. Combined with the
+// non-root uid recommendation, this gives the application enough
+// privilege to perform every operation it would attempt in production
+// while still routing every privileged check through cap_capable so
+// the BCC tracer can record it. The set is written into all five OCI
+// capability buckets (bounding/effective/permitted/inheritable/ambient)
+// so caps survive across exec(2).
+//
+// finalizeSecurityScan compares the on-disk config.json against what
+// was actually observed during the run, so this in-memory grant does
+// not leak into subsequent runs.
+func grantAllCapsForScan(spec *specs.Spec) {
+	if spec == nil {
+		return
+	}
+	caps := allKnownCapabilityNames()
+	if len(caps) == 0 {
+		logrus.Warn("security-scan: kernel reported no capabilities; cap-trace coverage will be limited")
+		return
+	}
+	if spec.Process == nil {
+		spec.Process = &specs.Process{}
+	}
+	if spec.Process.Capabilities == nil {
+		spec.Process.Capabilities = &specs.LinuxCapabilities{}
+	}
+	spec.Process.Capabilities.Bounding = caps
+	spec.Process.Capabilities.Effective = caps
+	spec.Process.Capabilities.Permitted = caps
+	spec.Process.Capabilities.Inheritable = caps
+	spec.Process.Capabilities.Ambient = caps
+	logrus.Infof("security-scan: granted %d capabilities for scan run (will be narrowed by finalize)", len(caps))
+}
+
+// warnIfRootInScan logs a warning when the bundle asks for uid 0.
+// We do not rewrite the spec - some workloads genuinely need root and
+// forcing a non-root uid would break them - but cap_capable is only
+// called for non-root tasks, so the cap-trace coverage degrades sharply
+// when the init process runs as root. Documented in SCANNER_PROGRESS.
+func warnIfRootInScan(spec *specs.Spec) {
+	if spec == nil || spec.Process == nil {
+		return
+	}
+	if spec.Process.User.UID == 0 {
+		logrus.Warn("security-scan: container runs as uid 0; kernel skips many cap_capable checks for root, so the trace will under-report. Consider setting process.user.uid to a non-zero value (e.g. 65534).")
+	}
+}
+
+func allKnownCapabilityNames() []string {
+	last, err := capability.LastCap()
+	if err != nil {
+		return nil
+	}
+	out := make([]string, 0, int(last)+1)
+	for i := 0; i <= int(last); i++ {
+		out = append(out, ociCapName(capability.Cap(i)))
+	}
+	return out
+}
+
+// ociCapName converts the moby/sys/capability lowercase form ("chown")
+// into the uppercase CAP_-prefixed form the OCI runtime-spec mandates
+// for process.capabilities ("CAP_CHOWN"). Done in one place so we never
+// mix lowercase and uppercase entries inside the same cap set.
+func ociCapName(c capability.Cap) string {
+	return "CAP_" + strings.ToUpper(c.String())
 }
 
 // resolveRuncSelfExec returns the absolute path of the running runc
