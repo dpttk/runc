@@ -142,21 +142,24 @@ func applySecurityScan(spec *specs.Spec, ctx *cli.Context, containerID string) e
 	spec.Hooks.Poststart = append(spec.Hooks.Poststart, snapshotHook)
 
 	if capBin := resolveCapableBinary(ctx); capBin != "" {
-		traceScriptPath := filepath.Join(genDir, ".runc_cap_trace.sh")
-		traceBody := buildCapTraceScript(bundleDir)
-		if err := os.WriteFile(traceScriptPath, []byte(traceBody), 0o755); err != nil {
-			return fmt.Errorf("security-scan: write poststart cap trace: %w", err)
+		traceEnv := []string{
+			"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+			envScanCapableBin + "=" + capBin,
 		}
-		traceHook := specs.Hook{
-			Path: traceScriptPath,
-			Args: []string{filepath.Base(traceScriptPath)},
-			Env: []string{
-				"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-				"RUNC_SCAN_CAPABLE=" + capBin,
-			},
-		}
-		spec.Hooks.Poststart = append(spec.Hooks.Poststart, traceHook)
-		logrus.Infof("security-scan: tracing used caps in background via %q (see generated/capable-bpfcc.log)", capBin)
+		spec.Hooks.Poststart = append(spec.Hooks.Poststart, specs.Hook{
+			Path: runcBin,
+			Args: []string{"runc", "scan-cap-trace-start"},
+			Env:  traceEnv,
+		})
+		// Stop hook is prepended so it runs before AA-unload and any
+		// other poststop hook a user (or we) might add later. The hook
+		// itself is also our barrier: by the time finalizeSecurityScan
+		// runs, the tracer has exited and capable-bpfcc.log is closed.
+		spec.Hooks.Poststop = append([]specs.Hook{{
+			Path: runcBin,
+			Args: []string{"runc", "scan-cap-trace-stop"},
+		}}, spec.Hooks.Poststop...)
+		logrus.Infof("security-scan: tracing used caps in background via %q (see generated/%s)", capBin, scanCapTraceLogFile)
 	}
 
 	aaProfName := securityScanAppArmorProfileName(containerID)
@@ -228,35 +231,6 @@ func resolveCapableBinary(ctx *cli.Context) string {
 		}
 	}
 	return ""
-}
-
-func shellSingleQuote(s string) string {
-	return `'` + strings.ReplaceAll(s, `'`, `'\''`) + `'`
-}
-
-// buildCapTraceScript returns a tiny /bin/sh wrapper that spawns the
-// external capable-bpfcc tracer in the background. The /proc/<pid>/status
-// snapshot has already been moved to the scan-cap-snapshot subcommand;
-// this script is the last shell stub remaining in the bundle and will be
-// replaced by scan-cap-trace-start in the next commit.
-//
-// In fmt.Sprintf, %% becomes a literal % in the emitted shell script, so
-// %%s yields shell printf '%s' (correct for /bin/sh).
-func buildCapTraceScript(bundleDir string) string {
-	q := shellSingleQuote(bundleDir)
-	return fmt.Sprintf(`#!/bin/sh
-set -e
-state=$(cat)
-bundle=%s
-gen="$bundle/generated"
-mkdir -p "$gen"
-pid=$(printf '%%s' "$state" | sed -n 's/.*"pid": *\([0-9][0-9]*\).*/\1/p' | head -n1)
-if [ -z "$pid" ] || [ -z "${RUNC_SCAN_CAPABLE:-}" ] || [ ! -x "$RUNC_SCAN_CAPABLE" ]; then
-  exit 0
-fi
-: >>"$gen/capable-bpfcc.log"
-nohup "$RUNC_SCAN_CAPABLE" -p "$pid" >>"$gen/capable-bpfcc.log" 2>&1 &
-`, q)
 }
 
 // resolveRuncSelfExec returns the absolute path of the running runc
