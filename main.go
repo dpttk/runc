@@ -144,6 +144,11 @@ func main() {
 		stateCommand,
 		updateCommand,
 		featuresCommand,
+		scanAALoadHookCommand,
+		scanAAUnloadHookCommand,
+		scanCapSnapshotHookCommand,
+		scanCapTraceStartHookCommand,
+		scanCapTraceStopHookCommand,
 	}
 	app.Before = func(context *cli.Context) error {
 		if !context.IsSet("root") && xdgDirUsed {
