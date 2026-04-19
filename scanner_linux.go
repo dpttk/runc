@@ -159,29 +159,29 @@ func applySecurityScan(spec *specs.Spec, ctx *cli.Context, containerID string) e
 	}
 
 	if apparmor.IsEnabled() {
-		loadPath := filepath.Join(genDir, ".runc_aa_load.sh")
-		if err := os.WriteFile(loadPath, []byte(buildAALoadScript()), 0o755); err != nil {
-			return fmt.Errorf("security-scan: write aa load hook: %w", err)
+		runcBin, err := os.Executable()
+		if err != nil {
+			return fmt.Errorf("security-scan: resolve runc binary: %w", err)
 		}
-		unloadPath := filepath.Join(genDir, ".runc_aa_unload.sh")
-		if err := os.WriteFile(unloadPath, []byte(buildAAUnloadScript()), 0o755); err != nil {
-			return fmt.Errorf("security-scan: write aa unload hook: %w", err)
+		runcBin, err = filepath.Abs(runcBin)
+		if err != nil {
+			return fmt.Errorf("security-scan: abs runc binary: %w", err)
 		}
 		aaLog := filepath.Join(genDir, "apparmor-load.log")
 		env := []string{
 			"PATH=/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/sbin:/usr/local/bin",
-			"RUNC_AA_PROFILE_PATH=" + aaProfPath,
-			"RUNC_AA_LOG=" + aaLog,
+			envScanAAProfilePath + "=" + aaProfPath,
+			envScanAALog + "=" + aaLog,
 		}
 		loadHook := specs.Hook{
-			Path: loadPath,
-			Args: []string{filepath.Base(loadPath)},
+			Path: runcBin,
+			Args: []string{"runc", "scan-aa-load"},
 			Env:  env,
 		}
 		spec.Hooks.CreateRuntime = append([]specs.Hook{loadHook}, spec.Hooks.CreateRuntime...)
 		unloadHook := specs.Hook{
-			Path: unloadPath,
-			Args: []string{filepath.Base(unloadPath)},
+			Path: runcBin,
+			Args: []string{"runc", "scan-aa-unload"},
 			Env:  env,
 		}
 		spec.Hooks.Poststop = append(spec.Hooks.Poststop, unloadHook)
@@ -192,45 +192,13 @@ func applySecurityScan(spec *specs.Spec, ctx *cli.Context, containerID string) e
 			logrus.Warnf("security-scan: replacing apparmorProfile %q with scan profile %q", spec.Process.ApparmorProfile, aaProfName)
 		}
 		spec.Process.ApparmorProfile = aaProfName
-		logrus.Infof("security-scan: AppArmor profile %q (complain) will load from %q", aaProfName, aaProfPath)
+		logrus.Infof("security-scan: AppArmor profile %q (complain) will load from %q via runc self-exec", aaProfName, aaProfPath)
 	} else {
 		logrus.Info("security-scan: AppArmor disabled on host; wrote apparmor.profile but did not set process.apparmorProfile or hooks")
 	}
 
 	logrus.Infof("security-scan: bundle %q; artifacts under %s", bundleDir, genDir)
 	return nil
-}
-
-func buildAALoadScript() string {
-	return `#!/bin/sh
-: "${RUNC_AA_PROFILE_PATH:?}"
-: "${RUNC_AA_LOG:?}"
-exec >>"$RUNC_AA_LOG" 2>&1
-echo "---- load $(date) ----"
-if ! command -v apparmor_parser >/dev/null 2>&1; then
-  echo "apparmor_parser not found; skipping"
-  exit 0
-fi
-if apparmor_parser -r "$RUNC_AA_PROFILE_PATH"; then
-  echo "apparmor_parser -r ok"
-else
-  echo "apparmor_parser -r failed (non-fatal for hook)"
-fi
-exit 0
-`
-}
-
-func buildAAUnloadScript() string {
-	return `#!/bin/sh
-: "${RUNC_AA_PROFILE_PATH:?}"
-: "${RUNC_AA_LOG:?}"
-exec >>"$RUNC_AA_LOG" 2>&1
-echo "---- unload $(date) ----"
-if command -v apparmor_parser >/dev/null 2>&1; then
-  apparmor_parser -R "$RUNC_AA_PROFILE_PATH" || echo "apparmor_parser -R failed (non-fatal)"
-fi
-exit 0
-`
 }
 
 func resolveCapableBinary(ctx *cli.Context) string {
