@@ -74,7 +74,7 @@ runc: runc-bin
 
 .PHONY: runc-bin
 runc-bin:
-	$(GO_BUILD) -o runc .
+	$(GO_BUILD) -o runc ./src
 
 .PHONY: all
 all: runc memfd-bind
@@ -106,7 +106,7 @@ static: static-bin
 
 .PHONY: static-bin
 static-bin:
-	$(GO_BUILD_STATIC) -o runc .
+	$(GO_BUILD_STATIC) -o runc ./src
 
 .PHONY: releaseall
 releaseall: RELEASE_ARGS := "-a 386 -a amd64 -a arm64 -a armel -a armhf -a ppc64le -a riscv64 -a s390x"
