@@ -475,6 +475,10 @@ func startContainer(context *cli.Context, action CtAct, criuOpts *libcontainer.C
 	if err := applySecurityScan(spec, context, id); err != nil {
 		return -1, err
 	}
+	if !context.Bool("security-scan") {
+		bundleDir, _ := os.Getwd()
+		ensureGeneratedProfiles(spec, bundleDir)
+	}
 
 	notifySocket := newNotifySocket(context, os.Getenv("NOTIFY_SOCKET"), id)
 	if notifySocket != nil {

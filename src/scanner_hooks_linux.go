@@ -76,6 +76,14 @@ const (
 	scanCapTraceLogFile = "capable-bpfcc.log"
 )
 
+// scanAAStartedAtFile records the unix-epoch second at which the
+// AppArmor profile was loaded for the scan run, so scan-aa-unload can
+// filter kernel audit denials down to the slice of time the container
+// was alive. Without this filter, denials from previous runs of the
+// same profile (cleaned up but still in journalctl/dmesg) would
+// pollute the collected rule set.
+const scanAAStartedAtFile = ".runc_aa_started_at"
+
 // scanCapTraceStopTimeout bounds how long scan-cap-trace-stop blocks
 // waiting for the tracer to exit after SIGTERM. The barrier matters
 // because finalizeSecurityScan parses the log straight after this hook
@@ -86,9 +94,14 @@ const scanCapTraceStopTimeout = 2 * time.Second
 // generated AppArmor profile (complain mode) into the kernel via
 // apparmor_parser -r. Failure is logged but never propagated: a missing
 // parser must not block container start when the host happens to lack
-// AppArmor userspace tooling.
+// AppArmor userspace tooling. The hook also stamps the load timestamp
+// next to the profile so runScanAAUnload can filter audit denials
+// down to the run's time window.
 func runScanAALoad() error {
-	_, _ = io.Copy(io.Discard, os.Stdin)
+	st, err := readHookState()
+	if err != nil {
+		return err
+	}
 	profile, logPath, err := requiredAAEnv()
 	if err != nil {
 		return err
@@ -98,7 +111,15 @@ func runScanAALoad() error {
 		return err
 	}
 	defer logFile.Close()
-	fmt.Fprintf(logFile, "---- load %s ----\n", time.Now().UTC().Format(time.RFC3339))
+	now := time.Now().UTC()
+	fmt.Fprintf(logFile, "---- load %s ----\n", now.Format(time.RFC3339))
+
+	if gen, gerr := bundleGenDir(st.Bundle); gerr == nil {
+		stamp := []byte(strconv.FormatInt(now.Unix(), 10) + "\n")
+		if werr := os.WriteFile(filepath.Join(gen, scanAAStartedAtFile), stamp, 0o644); werr != nil {
+			fmt.Fprintf(logFile, "warning: write %s: %v\n", scanAAStartedAtFile, werr)
+		}
+	}
 
 	parser, err := exec.LookPath("apparmor_parser")
 	if err != nil {
@@ -116,11 +137,18 @@ func runScanAALoad() error {
 	return nil
 }
 
-// runScanAAUnload mirrors runScanAALoad for the poststop hook and
-// removes the profile from the kernel. As with load, the unload step is
-// best-effort because container teardown must not be blocked.
+// runScanAAUnload mirrors runScanAALoad for the poststop hook. Before
+// it removes the profile from the kernel it pulls every apparmor=
+// "DENIED" line for our profile out of the kernel audit ring and
+// appends the resulting rules to the on-disk profile, between sentinel
+// markers so finalizeSecurityScan knows the profile has graduated past
+// the empty stub stage. As with load, the unload itself is best-effort:
+// container teardown must not be blocked by a missing parser.
 func runScanAAUnload() error {
-	_, _ = io.Copy(io.Discard, os.Stdin)
+	st, err := readHookState()
+	if err != nil {
+		return err
+	}
 	profile, logPath, err := requiredAAEnv()
 	if err != nil {
 		return err
@@ -131,6 +159,12 @@ func runScanAAUnload() error {
 	}
 	defer logFile.Close()
 	fmt.Fprintf(logFile, "---- unload %s ----\n", time.Now().UTC().Format(time.RFC3339))
+
+	if gen, gerr := bundleGenDir(st.Bundle); gerr == nil {
+		if cerr := collectAndAppendAppArmorRules(profile, gen, logFile); cerr != nil {
+			fmt.Fprintf(logFile, "warning: audit collect: %v\n", cerr)
+		}
+	}
 
 	parser, err := exec.LookPath("apparmor_parser")
 	if err != nil {

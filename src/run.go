@@ -78,7 +78,7 @@ command(s) that get executed on start, edit the args parameter of the spec. See
 		},
 		cli.BoolFlag{
 			Name:  "security-scan",
-			Usage: "enable security artifact collection on run: oci-seccomp-bpf-hook (prestart), optional BCC capable trace, Cap* snapshot, AppArmor stub under generated/; after exit may merge capabilities into config.json if wider than minimal default (not for runc create)",
+			Usage: "security-scan mode: relax host policy, record seccomp/AppArmor/capability artefacts under generated/, and on successful exit write them back into config.json (caps narrowed, seccomp wired, apparmor profile name set and flipped to enforce when audit-collected rules are present). The pre-scan config is preserved as generated/spec.original.json. (run only)",
 		},
 		cli.StringFlag{
 			Name:  "scan-seccomp-hook",

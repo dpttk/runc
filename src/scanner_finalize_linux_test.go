@@ -1,12 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"flag"
 	"os"
 	"path/filepath"
 	"reflect"
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/opencontainers/runtime-spec/specs-go"
@@ -110,8 +112,11 @@ func readBoundingCaps(t *testing.T, bundle string) []string {
 	return out
 }
 
+// Tests that drive finalizeSecurityScan must run serially: the helper
+// rebinds process-wide os.Getwd via os.Chdir, so t.Parallel() across
+// them races on a shared cwd. Pure-function tests above stay parallel.
+
 func TestFinalizeNarrowsToObservedSet(t *testing.T) {
-	t.Parallel()
 	traceLog := "12:00:00 0 1 cmd 6 CAP_NET_BIND_SERVICE 1\n"
 	bundle := writeBundle(t, []string{"CAP_KILL", "CAP_NET_ADMIN", "CAP_NET_BIND_SERVICE"}, traceLog)
 
@@ -126,7 +131,6 @@ func TestFinalizeNarrowsToObservedSet(t *testing.T) {
 }
 
 func TestFinalizeWritesEmptyOnEmptyTrace(t *testing.T) {
-	t.Parallel()
 	bundle := writeBundle(t, []string{"CAP_NET_ADMIN"}, "")
 
 	if err := runFinalizeWithDir(t, bundle); err != nil {
@@ -139,7 +143,6 @@ func TestFinalizeWritesEmptyOnEmptyTrace(t *testing.T) {
 }
 
 func TestFinalizeNoOpWhenAlreadyExact(t *testing.T) {
-	t.Parallel()
 	traceLog := "12:00:00 0 1 cmd 6 CAP_NET_BIND_SERVICE 1\n"
 	bundle := writeBundle(t, []string{"CAP_NET_BIND_SERVICE"}, traceLog)
 
@@ -157,5 +160,206 @@ func TestFinalizeNoOpWhenAlreadyExact(t *testing.T) {
 	}
 	if !beforeStat.ModTime().Equal(afterStat.ModTime()) {
 		t.Fatalf("config.json was rewritten when discovered set already matched")
+	}
+}
+
+func writeFile(t *testing.T, path, body string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", filepath.Dir(path), err)
+	}
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
+}
+
+func readSpec(t *testing.T, bundle string) specs.Spec {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join(bundle, specConfig))
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	var s specs.Spec
+	if err := json.Unmarshal(raw, &s); err != nil {
+		t.Fatalf("parse config: %v", err)
+	}
+	return s
+}
+
+func TestFinalizeWritesBackup(t *testing.T) {
+	bundle := writeBundle(t, []string{"CAP_KILL"}, "")
+	originalRaw, err := os.ReadFile(filepath.Join(bundle, specConfig))
+	if err != nil {
+		t.Fatalf("read original: %v", err)
+	}
+
+	if err := runFinalizeWithDir(t, bundle); err != nil {
+		t.Fatalf("finalize: %v", err)
+	}
+	backup := filepath.Join(bundle, "generated", scanSpecOriginalFile)
+	got, err := os.ReadFile(backup)
+	if err != nil {
+		t.Fatalf("read backup: %v", err)
+	}
+	if !bytes.Equal(got, originalRaw) {
+		t.Fatalf("backup content drifted from original config")
+	}
+}
+
+func TestFinalizeBackupIsIdempotent(t *testing.T) {
+	bundle := writeBundle(t, []string{"CAP_KILL"}, "")
+
+	if err := runFinalizeWithDir(t, bundle); err != nil {
+		t.Fatalf("first finalize: %v", err)
+	}
+	backup := filepath.Join(bundle, "generated", scanSpecOriginalFile)
+	sentinel := []byte("frozen-pre-scan\n")
+	if err := os.WriteFile(backup, sentinel, 0o644); err != nil {
+		t.Fatalf("rewrite backup: %v", err)
+	}
+	if err := runFinalizeWithDir(t, bundle); err != nil {
+		t.Fatalf("second finalize: %v", err)
+	}
+	got, err := os.ReadFile(backup)
+	if err != nil {
+		t.Fatalf("read backup: %v", err)
+	}
+	if !bytes.Equal(got, sentinel) {
+		t.Fatalf("backup overwritten on second finalize: %q", string(got))
+	}
+}
+
+func TestFinalizeAppliesSeccomp(t *testing.T) {
+	bundle := writeBundle(t, []string{"CAP_KILL"}, "")
+	seccomp := `{
+  "defaultAction": "SCMP_ACT_ERRNO",
+  "syscalls": [
+    {"names": ["read","write"], "action": "SCMP_ACT_ALLOW"}
+  ]
+}`
+	writeFile(t, filepath.Join(bundle, "generated", scanSeccompFile), seccomp)
+
+	if err := runFinalizeWithDir(t, bundle); err != nil {
+		t.Fatalf("finalize: %v", err)
+	}
+	s := readSpec(t, bundle)
+	if s.Linux == nil || s.Linux.Seccomp == nil {
+		t.Fatalf("expected linux.seccomp to be populated, got %+v", s.Linux)
+	}
+	if s.Linux.Seccomp.DefaultAction != "SCMP_ACT_ERRNO" {
+		t.Fatalf("unexpected defaultAction: %q", s.Linux.Seccomp.DefaultAction)
+	}
+	if len(s.Linux.Seccomp.Syscalls) != 1 || len(s.Linux.Seccomp.Syscalls[0].Names) != 2 {
+		t.Fatalf("syscall groups not preserved: %+v", s.Linux.Seccomp.Syscalls)
+	}
+}
+
+func TestFinalizeIgnoresEmptySeccomp(t *testing.T) {
+	bundle := writeBundle(t, []string{"CAP_KILL"}, "")
+	writeFile(t, filepath.Join(bundle, "generated", scanSeccompFile), "")
+
+	if err := runFinalizeWithDir(t, bundle); err != nil {
+		t.Fatalf("finalize: %v", err)
+	}
+	s := readSpec(t, bundle)
+	if s.Linux != nil && s.Linux.Seccomp != nil {
+		t.Fatalf("expected no seccomp wired from empty file, got %+v", s.Linux.Seccomp)
+	}
+}
+
+func TestFinalizeRejectsSeccompWithoutDefaultAction(t *testing.T) {
+	bundle := writeBundle(t, []string{"CAP_KILL"}, "")
+	writeFile(t, filepath.Join(bundle, "generated", scanSeccompFile), `{"syscalls": []}`)
+
+	if err := runFinalizeWithDir(t, bundle); err != nil {
+		t.Fatalf("finalize: %v", err)
+	}
+	s := readSpec(t, bundle)
+	if s.Linux != nil && s.Linux.Seccomp != nil {
+		t.Fatalf("expected no seccomp wired without defaultAction")
+	}
+}
+
+func TestFinalizeAppliesAppArmorProfileName(t *testing.T) {
+	bundle := writeBundle(t, []string{"CAP_KILL"}, "")
+	profile := `#include <tunables/global>
+
+profile runc_scan_my_ct flags=(complain, attach_disconnected, mediate_deleted) {
+  #include <abstractions/base>
+}
+`
+	writeFile(t, filepath.Join(bundle, "generated", scanAppArmorFile), profile)
+
+	if err := runFinalizeWithDir(t, bundle); err != nil {
+		t.Fatalf("finalize: %v", err)
+	}
+	s := readSpec(t, bundle)
+	if s.Process == nil || s.Process.ApparmorProfile != "runc_scan_my_ct" {
+		t.Fatalf("expected apparmorProfile=runc_scan_my_ct, got %+v", s.Process)
+	}
+}
+
+func TestFinalizeKeepsComplainWithoutAuditMarker(t *testing.T) {
+	bundle := writeBundle(t, []string{"CAP_KILL"}, "")
+	profile := `#include <tunables/global>
+
+profile runc_scan_x flags=(complain, attach_disconnected, mediate_deleted) {
+  #include <abstractions/base>
+}
+`
+	profilePath := filepath.Join(bundle, "generated", scanAppArmorFile)
+	writeFile(t, profilePath, profile)
+
+	if err := runFinalizeWithDir(t, bundle); err != nil {
+		t.Fatalf("finalize: %v", err)
+	}
+	got, err := os.ReadFile(profilePath)
+	if err != nil {
+		t.Fatalf("read profile: %v", err)
+	}
+	if !strings.Contains(string(got), "flags=(complain") {
+		t.Fatalf("expected profile to stay in complain mode without audit marker, got:\n%s", got)
+	}
+}
+
+func TestFinalizeFlipsComplainOnAuditMarker(t *testing.T) {
+	bundle := writeBundle(t, []string{"CAP_KILL"}, "")
+	profile := `#include <tunables/global>
+
+profile runc_scan_x flags=(complain, attach_disconnected, mediate_deleted) {
+  #include <abstractions/base>
+  # --- BEGIN runc-scan audit-collected rules ---
+  /etc/hostname r,
+  # --- END runc-scan audit-collected rules ---
+}
+`
+	profilePath := filepath.Join(bundle, "generated", scanAppArmorFile)
+	writeFile(t, profilePath, profile)
+
+	if err := runFinalizeWithDir(t, bundle); err != nil {
+		t.Fatalf("finalize: %v", err)
+	}
+	got, err := os.ReadFile(profilePath)
+	if err != nil {
+		t.Fatalf("read profile: %v", err)
+	}
+	if strings.Contains(string(got), "complain") {
+		t.Fatalf("expected complain to be removed after audit marker, got:\n%s", got)
+	}
+	if !strings.Contains(string(got), "flags=(attach_disconnected, mediate_deleted)") {
+		t.Fatalf("expected remaining flags to be preserved, got:\n%s", got)
+	}
+}
+
+func TestFinalizeFlipDropsEmptyFlagsClause(t *testing.T) {
+	t.Parallel()
+	raw := []byte("profile runc_scan_x flags=(complain) {\n}\n")
+	got, changed := flipApparmorComplainToEnforce(raw)
+	if !changed {
+		t.Fatalf("expected change when only flag was complain")
+	}
+	want := "profile runc_scan_x {\n}\n"
+	if string(got) != want {
+		t.Fatalf("got %q want %q", got, want)
 	}
 }

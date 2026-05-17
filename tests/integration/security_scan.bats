@@ -40,6 +40,35 @@ function teardown() {
 	# trace hook was wired and ran with --cgroupmap (see the stub).
 	[ -s "$ROOT/bundle/generated/capable-bpfcc.log" ]
 	grep -q "cgroupmap=" "$ROOT/bundle/generated/capable-bpfcc.log"
+	# Finalize contract: the pre-scan spec is preserved and the on-disk
+	# config picked up seccomp + apparmor from the generated artefacts.
+	[ -s "$ROOT/bundle/generated/spec.original.json" ]
+	jq -e '.linux.seccomp.defaultAction' "$ROOT/bundle/config.json" >/dev/null
+	[[ "$(jq -r '.process.apparmorProfile' "$ROOT/bundle/config.json")" == runc_scan_* ]]
+}
+
+@test "runc run --security-scan narrows config.json to traced caps including children" {
+	[ $EUID -ne 0 ] && skip "requires root (OCI hooks)"
+	update_config '.process.args = ["/bin/true"] | .process.terminal = false'
+	local seccomp_stub="${INTEGRATION_ROOT}/../../contrib/runc-security-scan-stub-seccomp-hook.sh"
+	local capable_stub="${INTEGRATION_ROOT}/../../contrib/runc-security-scan-stub-capable.sh"
+	local bpftool_stub="${INTEGRATION_ROOT}/../../contrib/runc-security-scan-stub-bpftool.sh"
+	chmod +x "$seccomp_stub" "$capable_stub" "$bpftool_stub"
+	export RUNC_SCAN_PIN_ROOT="$BATS_TEST_TMPDIR/scan-pin"
+	export RUNC_STUB_BPFTOOL_LOG="$BATS_TEST_TMPDIR/bpftool.log"
+	mkdir -p "$RUNC_SCAN_PIN_ROOT"
+	runc run --security-scan \
+		--scan-seccomp-hook "$seccomp_stub" \
+		--scan-capable "$capable_stub" \
+		--scan-bpftool "$bpftool_stub" \
+		test_sec_scan_caps
+	[ "$status" -eq 0 ]
+	# The stub emits two distinct CAP_* events from two different pids
+	# to simulate cgroup-wide tracing seeing both init and a child it
+	# spawned; finalize must aggregate both into the narrowed set.
+	local bounding
+	bounding="$(jq -r '.process.capabilities.bounding | sort | join(",")' "$ROOT/bundle/config.json")"
+	[ "$bounding" = "CAP_NET_BIND_SERVICE,CAP_SYS_ADMIN" ]
 }
 
 @test "runc run --security-scan rejects missing capable-bpfcc" {
