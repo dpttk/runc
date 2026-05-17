@@ -1,0 +1,22 @@
+# LaTeX build artefacts
+build/
+*.aux
+*.bbl
+*.bcf
+*.blg
+*.fdb_latexmk
+*.fls
+*.lof
+*.log
+*.lot
+*.out
+*.run.xml
+*.synctex.gz
+*.toc
+
+# Compiled output (kept out of git; build locally or via CI)
+main.pdf
+
+# Editor / tool local config
+.vscode/
+.latexmkrc

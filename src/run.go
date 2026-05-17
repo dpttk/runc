@@ -88,7 +88,12 @@ command(s) that get executed on start, edit the args parameter of the spec. See
 		cli.StringFlag{
 			Name:  "scan-capable",
 			Value: "",
-			Usage: "path to BCC capable (e.g. capable-bpfcc or /usr/share/bcc/tools/capable); if set and executable, traces used caps in background to generated/capable-bpfcc.log; otherwise search PATH and default locations",
+			Usage: "path to BCC capable (e.g. capable-bpfcc or /usr/share/bcc/tools/capable); must support --cgroupmap; otherwise search PATH and default locations",
+		},
+		cli.StringFlag{
+			Name:  "scan-bpftool",
+			Value: "",
+			Usage: "path to bpftool used by --security-scan to pin and populate the per-container cgroup BPF map; otherwise search PATH",
 		},
 	},
 	Action: func(context *cli.Context) error {

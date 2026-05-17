@@ -1,0 +1,109 @@
+
+\chapter{Additional Achievement: CI Infrastructure}\label{ch:additional}
+
+\section{Motivation}
+
+The runtime described in Chapters~\ref{ch:design}--\ref{ch:impl} is half of a usable thesis artefact; the other half is the infrastructure that exercises it. A thesis-grade evaluation needs (i) a deterministic environment so that benchmark numbers are comparable across runs, (ii) a way to re-run the entire scan matrix on every push to the runtime fork, and (iii) an artefact archive that preserves the generated profiles for later inspection and for the figures in this thesis. None of these are in scope for the runtime fork itself, but all three are necessary to make the experiments reproducible.
+
+The result is a separate repository, \texttt{thesis-ci-repo}, that lives next to the runtime fork and packages the entire evaluation pipeline as code: Terraform for the cloud resources, Ansible for the host configuration, GitHub Actions for the workflow, and a per-bundle directory layout that drives both the scan and the validation step. This chapter documents that repository as the \emph{additional achievement} delivered alongside the runtime.
+
+\section{Repository Overview}
+
+The CI repository contains five top-level directories:
+
+\begin{verbatim}
+.github/workflows/scan-matrix.yml   # the only CI job
+ansible/                            # host provisioning
+terraform/                          # cloud resources
+bundles/                            # one directory per evaluated workload
+scripts/                            # fetch-runc, prepare-bundle, run-scan, ...
+\end{verbatim}
+
+The end-to-end flow is shown in Figure~\ref{fig:ci-flow} (placeholder).
+
+\begin{figure}[ht]
+\centering
+\fbox{\parbox{0.85\linewidth}{\centering\textit{Placeholder for Fig.\ \ref{fig:ci-flow} --- \texttt{runc-fork} push triggers \texttt{publish-runc-binary.yml}, which uploads the binary as a GitHub Actions artefact and dispatches a \texttt{runc-build-available} event to \texttt{thesis-ci-repo}; the scan-matrix workflow then fetches the binary, prepares each bundle, runs \texttt{runc -{}-security-scan}, verifies the output, and uploads the artefacts to Yandex Object Storage.}}}
+\caption{End-to-end CI flow between \texttt{runc-fork} and \texttt{thesis-ci-repo}.}
+\label{fig:ci-flow}
+\end{figure}
+
+\section{Cloud Infrastructure (Terraform)}
+
+The runner host and its support resources are described in Terraform under \texttt{terraform/}. The state is kept in S3-compatible Yandex Object Storage. Inputs are fed via \texttt{terraform.tfvars}; the operator runs \texttt{terraform apply} from a workstation. Provisioned resources include:
+
+\begin{itemize}
+    \item a Yandex Cloud VPC with a subnet for the runner;
+    \item a security group that opens only the egress paths the runner needs (HTTPS to GitHub, S3 to Object Storage);
+    \item a service account with the minimum role set required to write to the artefacts bucket;
+    \item an Object Storage bucket (\texttt{YC\_ARTIFACTS\_BUCKET}) that stores the generated profiles per scan, partitioned by \texttt{scans/<runc\_ref>/<run\_id>/<bundle>/};
+    \item the runner VM (currently 4~vCPU, 8~GiB RAM, Ubuntu~24.04) with a static IP.
+\end{itemize}
+
+Terraform is intentionally not wired into GitHub Actions: cloud lifecycle is rare, manual, and easier to audit when a human operator runs \texttt{terraform plan} and reads the diff before applying.
+
+\section{Host Provisioning (Ansible)}
+
+After Terraform creates the VM, \texttt{scripts/gen-inventory.sh} renders an Ansible inventory from the Terraform outputs, and \texttt{ansible/playbook.yml} converges the host. The playbook is split into three roles:
+
+\begin{itemize}
+    \item \textbf{\texttt{base}} --- baseline OS hardening, time sync, log rotation, AWS CLI v2 (used by \texttt{upload-artifacts.sh});
+    \item \textbf{\texttt{scanner\_host}} --- the BCC toolchain (\texttt{bpfcc-tools}), \texttt{linux-tools-common} (for \texttt{bpftool}), \texttt{oci-seccomp-bpf-hook}, \texttt{apparmor-utils}, and the kernel headers required by BCC at first run;
+    \item \textbf{\texttt{gha\_runner}} --- registers the GitHub Actions self-hosted runner against the CI repo, installed as a systemd service.
+\end{itemize}
+
+The runner registration token is supplied via Ansible Vault; the rest of the inventory is plain text and can be regenerated from Terraform on demand.
+
+\section{Bundle Layout}
+
+Every workload that the matrix evaluates lives under \texttt{bundles/<name>/} as a self-contained directory. The contract is a single \texttt{bundle.yaml} file that drives \texttt{prepare-bundle.sh}, \texttt{run-scan.sh}, and \texttt{verify-profiles.sh}. The currently supported rootfs recipes are \texttt{busybox-tar}, \texttt{docker-export}, \texttt{tar-url}, and \texttt{script}. A bundle that needs a live network probe (e.g.\ \texttt{juice-shop}) declares \texttt{scan.probe\_script} and \texttt{config.template: ../templates/hostnet.config.json}; \texttt{run-scan.sh} starts \texttt{runc} in the background, runs the probe, and then \texttt{SIGTERM}s the container so the scanner can finalise.
+
+Adding a new bundle is a three-step operation: (i) create the directory and write \texttt{bundle.yaml}; (ii) drop bats files under \texttt{bundles/<name>/tests/}; (iii) commit. The \texttt{discover} job in the workflow picks the new directory up automatically.
+
+\section{The \texttt{scan-matrix.yml} Workflow}
+
+The workflow is the only CI job in the repository. It triggers on:
+
+\begin{itemize}
+    \item \texttt{repository\_dispatch: types: [runc-build-available]} fired by the runtime repository after a successful build;
+    \item a nightly cron;
+    \item manual \texttt{workflow\_dispatch}.
+\end{itemize}
+
+The workflow has three jobs:
+
+\begin{enumerate}
+    \item \textbf{\texttt{discover}} --- walks \texttt{bundles/} and emits a JSON matrix of bundle names. The matrix is consumed by the next job's \texttt{strategy.matrix}.
+    \item \textbf{\texttt{scan}} (matrix per bundle) --- runs on the self-hosted runner and executes, for each bundle:
+        \begin{itemize}
+            \item \texttt{fetch-runc.sh} --- downloads the \texttt{runc} binary from the runtime repo (\texttt{actions: read} via \texttt{RUNC\_ARTIFACTS\_TOKEN});
+            \item \texttt{prepare-bundle.sh} --- materialises the rootfs and the \texttt{config.json} according to \texttt{bundle.yaml};
+            \item \texttt{run-scan.sh} --- invokes \texttt{runc run -{}-security-scan} (and the probe script if declared);
+            \item \texttt{verify-profiles.sh} plus the bundle-defined bats pack --- asserts the generated profile shape and content against the contract;
+            \item \texttt{upload-artifacts.sh} --- pushes \texttt{generated/} to \texttt{s3://YC\_ARTIFACTS\_BUCKET/scans/<sha>/<run\_id>/<bundle>/}.
+        \end{itemize}
+    \item \textbf{\texttt{summary}} --- aggregates the per-bundle results into a GitHub Actions Job Summary (Markdown), so the matrix is readable from the run page without downloading artefacts.
+\end{enumerate}
+
+The required GitHub configuration on the CI repo side is small: \texttt{RUNC\_ARTIFACTS\_TOKEN} (PAT with \texttt{actions: read} on the runtime repo), \texttt{YC\_STORAGE\_ACCESS\_KEY} / \texttt{YC\_STORAGE\_SECRET\_KEY} (S3-compatible credentials for the bucket), and the \texttt{YC\_ARTIFACTS\_BUCKET} / \texttt{RUNC\_FORK\_REPO} variables.
+
+\section{Why a Separate Repository}
+
+A single-repository design was considered and rejected for two reasons. First, the scan matrix is not part of the runtime under test --- it observes the runtime, and conflating the observer with the observed makes it harder to argue that the matrix is fair. Second, the cloud resources, the Ansible playbook, and the bundle catalogue have a lifecycle that is independent of the runtime: a new bundle should not require a runtime release, and a Terraform refactor should not show up in the runtime's commit history. Splitting the two also keeps the runtime fork's CI surface minimal --- it builds the binary, publishes it as an artefact, and dispatches a single event.
+
+\section{Reproducibility Contract}
+
+Concretely, the artefact bucket together with the CI repository commit hash is enough to reproduce any number reported in Chapter~\ref{ch:impl}. For each \texttt{(runc\_ref, run\_id, bundle)} triple, the bucket contains:
+
+\begin{itemize}
+    \item the \texttt{generated/} directory verbatim (seccomp, AppArmor, capabilities trace, snapshots, logs);
+    \item the \texttt{config.json} effective during the scan;
+    \item the bats output and the workflow Job Summary;
+    \item the runner OS, kernel, and BCC versions captured at the start of the run.
+\end{itemize}
+
+\emph{Placeholder.} A short table linking the figures and tables in Chapter~\ref{ch:impl} to the corresponding artefact paths is added once the matrix produces the final numbers.
+
+\section{What This Achievement Adds to the Thesis}
+
+The CI infrastructure is presented as additional achievement because it is independent in scope from the runtime and stands on its own as engineering work. It also strengthens the central claim of the thesis: the runtime is usable by a single developer with no infrastructure (the basic case), and the same runtime can be wrapped in a fully reproducible IaC-defined matrix when an organisation does have infrastructure (the basic case scaled up). Both endpoints of that spectrum are demonstrated by the artefacts shipped alongside this writing.

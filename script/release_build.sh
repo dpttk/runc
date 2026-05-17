@@ -158,7 +158,7 @@ while getopts "a:c:H:hr:v:" opt; do
 	esac
 done
 
-version="${version:-$(<"$root/VERSION")}"
+version="${version:-$(<"$root/src/VERSION")}"
 releasedir="${releasedir:-release/$version}"
 hashcmd="${hashcmd:-sha256sum}"
 

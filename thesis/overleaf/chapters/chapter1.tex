@@ -1,0 +1,69 @@
+
+\chapter{Introduction}
+
+\section{Background}
+
+Containers have become the dominant deployment model for modern applications. Unlike virtual machines, which provide hardware-enforced isolation, containers share the host kernel with every other container on the node, which concentrates a substantial attack surface in a single component~\cite{wang2023}. A single kernel vulnerability can therefore compromise every container co-resident on the host~\cite{cve2019}.
+
+The Open Container Initiative (OCI) standardises container runtimes, and its reference implementation, \texttt{runc}, is intentionally biased toward performance and compatibility rather than confinement~\cite{volpert2024}. Linux already provides the kernel primitives that would close the gap: seccomp filters at the syscall boundary~\cite{lopes2020}, AppArmor or SELinux at the mandatory-access-control layer, and Linux capabilities to split the historical \texttt{root} into smaller privileges. In practice, however, all three are only as strong as the policies operators ship with their workloads, and meaningful policies are tedious and error-prone to author by hand.
+
+The industry has reacted in three directions. Sandboxed runtimes such as gVisor and Kata Containers replace the shared-kernel model with either a user-space kernel or a per-container microVM, trading 20--100\% runtime overhead for stronger isolation~\cite{wang2022,viktorsson2020}. Cluster-side projects such as the Kubernetes Security Profiles Operator (SPO)~\cite{spo2025}, Inspektor Gadget~\cite{inspektorgadget2025}, and Tetragon~\cite{tetragon2025} record container behaviour through eBPF and produce seccomp/AppArmor profiles that can later be pinned to pods. Both directions raise the floor of container security significantly, but both also introduce non-trivial cost: a sandbox costs CPU, while a recorder costs cluster infrastructure plus an engineer who knows how to operate it.
+
+\section{Problem Statement and Research Gap}
+
+This thesis addresses three concrete gaps that emerge from the literature and from the state of the art surveyed in Chapter~\ref{ch:litreview}.
+
+\textbf{Gap 1: missing comparative study.} No recent work compares a properly hardened traditional runtime against sandboxed alternatives. Existing comparisons~\cite{wang2022,volpert2024} use \emph{default} \texttt{runc} configurations, leaving the security--performance trade-off of an opinionated, hardened \texttt{runc} unmeasured.
+
+\textbf{Gap 2: developer-grade automation is missing.} Current automation either lives in a pipeline (SPO, Inspektor Gadget recordings, Tetragon) or in research prototypes that target individual mechanisms~\cite{lopes2020,canella2021,mattetti2020}. A solo developer or a small startup that wants confinement comparable to what a DevSecOps team would produce in a CI matrix has no equivalent tool that operates at the runtime layer itself.
+
+\textbf{Gap 3: limited integration across mechanisms.} Most prior automated approaches~\cite{lopes2020,canella2021} target seccomp alone. AppArmor, capability narrowing, and the orchestration of all three under one workflow remain fragmented across separate utilities and bundles.
+
+\section{Research Questions}
+
+\begin{enumerate}
+    \item Can the runtime itself, without infrastructure changes, generate seccomp, AppArmor, and capability profiles whose security level approaches what a CI-driven recorder produces?
+    \item How should a runtime expose this capability so that it remains a one-flag operation for a developer, while still satisfying the constraints CI-side recorders solve (child-process coverage, profile relaxation during the recording, non-root requirement)?
+    \item What is the resulting trade-off between the hardened traditional runtime, the same runtime in default mode, and sandboxed alternatives (gVisor, Kata)?
+\end{enumerate}
+
+\section{Proposed Approach}
+
+The proposed runtime is a fork of \texttt{runc} that adds a single flag, \texttt{-{}-security-scan}. When the flag is present:
+
+\begin{itemize}
+    \item All host-supplied confinement is relaxed in memory for the run (seccomp cleared, SELinux label cleared, \texttt{NoNewPrivileges} disabled, all known capabilities granted, AppArmor swapped for a complain-mode profile). The on-disk \texttt{config.json} is not mutated.
+    \item Syscalls are recorded by \texttt{oci-seccomp-bpf-hook} and emitted as \texttt{generated/seccomp.json}.
+    \item Capabilities are traced cgroup-wide by \texttt{capable-bpfcc} with a \texttt{bpftool}-pinned cgroup map, so child processes are observed (not only the init PID).
+    \item AppArmor learns through a complain-mode profile loaded by a \texttt{createRuntime} hook and unloaded by a \texttt{poststop} hook.
+    \item All hooks are sub-commands of the runtime binary itself (\texttt{runc scan-aa-load}, \texttt{runc scan-cap-trace-start}, etc.). The OCI bundle never has to embed executable artefacts.
+    \item On finalisation, the runtime narrows --- never widens --- \texttt{process.capabilities} in \texttt{config.json} to the observed set.
+\end{itemize}
+
+A second binary mode, the \emph{enforcement} mode, simply runs the workload with the generated profiles applied. The implementation also revisits the default capability set and ships two opt-in flags (\texttt{-{}-default-capabilities} for the upstream three-cap set, \texttt{-{}-default-capabilities-docker} for the historical fourteen-cap set), so that the hardened default does not break existing bundles.
+
+\section{Experimental Evaluation}
+
+The runtime is compared against four configurations:
+
+\begin{itemize}
+    \item \textbf{\texttt{runc} (default):} Standard OCI runtime with stock policies.
+    \item \textbf{Proposed runtime:} \texttt{--security-scan} for the recording run, then enforcement mode for the steady-state runs.
+    \item \textbf{gVisor:} User-space kernel sandbox.
+    \item \textbf{Kata Containers:} Microvm-based isolation.
+\end{itemize}
+
+Workloads include web servers (\texttt{nginx}), databases (\texttt{redis}, \texttt{postgresql}), language runtimes, and a microservice stack (\emph{juice-shop}). Reported metrics cover startup latency, CPU and memory overhead, I/O bandwidth, and security effectiveness against a curated list of container-escape vectors~\cite{cve2019,wong2023}. Detailed numbers are reported in Chapter~\ref{ch:impl} and discussed in Chapter~\ref{ch:conclusion}; placeholders mark the tables that depend on benchmark runs that are still pending at the time of writing.
+
+\section{Expected Contribution}
+
+\begin{enumerate}
+    \item The first published direct comparison between an opinionated, automatically hardened \texttt{runc} and the dominant sandboxed runtimes.
+    \item A practical, developer-grade runtime that produces seccomp, AppArmor, and capability profiles from a single CLI flag, with no cluster, recorder, or operator prerequisites.
+    \item Evidence-based guidance for organisations choosing between runtime-side automation, cluster-side recorders, and full sandboxing.
+    \item A turn-key infrastructure repository (Terraform + Ansible + GitHub Actions self-hosted runner on Yandex Cloud) that runs the scanner against a matrix of bundles and persists the resulting profiles in object storage. This is presented separately as the \emph{additional achievement} in Chapter~\ref{ch:additional}.
+\end{enumerate}
+
+\section{Thesis Organization}
+
+Chapter~\ref{ch:litreview} reviews the relevant literature, the cluster-side ecosystem (SPO, Inspektor Gadget, Tetragon), and the competitive landscape from manual authoring to full sandboxing. Chapter~\ref{ch:design} describes the design goals, the threat model, and the scanner architecture. Chapter~\ref{ch:impl} covers the implementation and the experimental setup. Chapter~\ref{ch:additional} documents the CI infrastructure that ships alongside the runtime. Chapter~\ref{ch:conclusion} concludes and outlines future work.

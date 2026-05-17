@@ -40,6 +40,29 @@ On Ubuntu/Debian, you can install the required dependencies with:
 apt update && apt install -y make gcc linux-libc-dev libseccomp-dev pkg-config git
 ```
 
+#### Provisioning a host for `--security-scan`
+
+The `--security-scan` mode in this fork requires extra runtime
+dependencies (capable-bpfcc with `--cgroupmap`, bpftool, AppArmor
+userspace, cgroup v2, and bpffs mounted at `/sys/fs/bpf`). On a fresh
+Debian/Ubuntu host run:
+
+```bash
+sudo script/setup-scan-host.sh
+```
+
+The script is idempotent: it installs the apt packages, mounts bpffs
+and persists it in `/etc/fstab`, verifies cgroup v2 and that
+`capable-bpfcc --cgroupmap` and `bpftool` work, and creates an
+unprivileged `runcscan` (uid 65532) system user. It also writes
+`/etc/profile.d/runc-scan.sh` exporting `RUNC_SCAN_USER` /
+`RUNC_SCAN_UID` so OCI bundles and CI jobs can wire the container's
+`process.user.uid` to a non-root identity (recommended; root tasks
+bypass many `cap_capable()` checks and shorten the cap trace).
+
+The same script is invoked from `thesis-ci-repo`'s Ansible playbook
+(role `scanner_host`) to provision the self-hosted runner.
+
 On CentOS/Fedora, you can install the required dependencies with:
 
 ```bash

@@ -1,0 +1,86 @@
+
+\chapter{Literature Review}\label{ch:litreview}
+
+\section{Container Architecture and Security Model}
+
+Containers provide operating-system-level virtualisation through Linux namespaces and cgroups. Unlike virtual machines, where each guest carries its own kernel, containers share a single host kernel~\cite{wang2023}. This architectural choice provides large performance gains but concentrates the attack surface. Flauzac et al.~\cite{flauzac2020} review native container security and observe that the shared kernel creates weaker isolation boundaries than the negligible CPU overhead suggests. Kozhirbayev and Sinnott~\cite{kozhirbayev2017} confirm the same trade-off through measurement.
+
+The Open Container Initiative (OCI) defines the standards that make containers portable across platforms. Merkel~\cite{merkel2014} introduced Docker, which popularised container technology and drove adoption of these standards.
+
+\section{Linux Security Mechanisms}
+
+\textbf{Seccomp.} Seccomp filters syscalls in the kernel using BPF programs and reduces the container attack surface independently of any other policy. Lopes et al.~\cite{lopes2020} demonstrate that seccomp profiles can be auto-generated through runtime tracing, removing up to 80\% of the syscalls available to the workload while keeping it functional. Schrammel et al.~\cite{schrammel2022} extend syscall filtering with PKU-based memory isolation. Canella et al.~\cite{canella2021} combine static and dynamic analysis to recover infrequently-executed paths, which pure tracing tends to miss.
+
+\textbf{Mandatory Access Control.} AppArmor enforces path-based MAC policies; SELinux enforces label-based ones. Mattetti and Allouche~\cite{mattetti2020} combine seccomp with AppArmor for end-to-end automatic hardening, and argue that the layered combination is materially stronger than either mechanism in isolation.
+
+\textbf{eBPF.} eBPF allows verified, sandboxed programs to run in the kernel and gives observability tools fine-grained access to syscall, capability, and network events with very low overhead~\cite{aich2021}. eBPF underpins both the recording side of the stack (BCC, \texttt{capable-bpfcc}, \texttt{oci-seccomp-bpf-hook}) and the runtime-side observability projects discussed below.
+
+\section{Sandboxed Container Runtimes}
+
+\textbf{gVisor.} gVisor implements a user-space kernel, written in Go, that intercepts syscalls before they reach the host kernel; only a minimal set issued by the gVisor sentry process actually reaches the host. The extra layer translates into substantial CPU and I/O overhead.
+
+\textbf{Kata Containers.} Kata runs each container inside a lightweight VM (typically QEMU or Firecracker), so each container has its own dedicated guest kernel protected by hardware virtualisation. The shared-kernel attack surface disappears, at the cost of memory and lifecycle overhead.
+
+\textbf{\texttt{runc}.} The reference OCI runtime provides only namespaces, cgroups, and capability handling. It optimises for performance and compatibility rather than confinement.
+
+\textbf{Comparative analysis.} Wang et al.~\cite{wang2022} measure all three approaches and confirm that \texttt{runc} dominates on raw performance but offers the weakest isolation. They notably do \emph{not} evaluate what \texttt{runc} could achieve with hardened policies, which is the gap this thesis closes. Viktorsson et al.~\cite{viktorsson2020} report 50--100\% overhead for gVisor and 20--40\% for Kata on representative microservice workloads, again with default \texttt{runc} as the baseline. Espe et al.~\cite{espe2020} establish independent performance baselines without addressing security hardening. Volpert et al.~\cite{volpert2024} use eBPF instrumentation to measure CPU, memory, I/O, and lifecycle overhead and reach the same conclusion.
+
+\section{Cluster-Side Recorders and Observability Stacks}
+
+A second family of solutions records container behaviour at the cluster layer rather than at the runtime layer.
+
+\textbf{Kubernetes Security Profiles Operator (SPO).} SPO~\cite{spo2025} runs in a Kubernetes cluster and provides Custom Resource Definitions (\texttt{SeccompProfile}, \texttt{SelinuxProfile}, \texttt{AppArmorProfile}, \texttt{ProfileRecording}) for installing, distributing, and recording security profiles. Profile recording is implemented via two backends: audit-log enrichment and an eBPF-based recorder. SPO's strength is that it integrates cleanly with the existing pod lifecycle; its cost is that the operator, the per-node DaemonSet, and the recording CRDs must be installed and operated, which is rarely feasible without a dedicated platform team.
+
+\textbf{Inspektor Gadget.} Inspektor Gadget~\cite{inspektorgadget2025} is an eBPF-based observability and debugging toolkit for Kubernetes. Among other gadgets it provides syscall and capability tracers and a workflow that emits seccomp profiles consumable by SPO. Its philosophy --- short-lived, ad-hoc gadgets composed by an operator --- complements SPO's lifecycle approach but adds another tool to the platform team's surface.
+
+\textbf{Tetragon.} Tetragon~\cite{tetragon2025} is a Cilium-project runtime security tool that uses eBPF to observe and (optionally) enforce process, file, and capability events. It is closer to a real-time IDS/IPS than to a profile generator, but its eBPF-driven event model directly informed the design choices for the cgroup-wide capability tracer in this work.
+
+\textbf{Why these are not the same as the proposed runtime.} SPO, Inspektor Gadget, and Tetragon all live above the runtime --- in a Kubernetes cluster, with their own controllers and CRDs --- and assume an operator who can set them up, interpret their output, and pin the resulting profiles back onto pods. The proposed runtime targets the same problem one layer down: a single CLI flag during a normal \texttt{runc run} produces the same kind of profile, with no cluster, no operator, and no CRDs.
+
+\section{Automated Policy Generation and Container Hardening}
+
+\textbf{Seccomp profiling.} Lopes et al.~\cite{lopes2020} show that runtime tracing produces application-specific seccomp profiles that meaningfully reduce the attack surface while keeping the workload functional. The \texttt{oci-seccomp-bpf-hook} project, used by Podman, packages the same idea as an OCI prestart hook; the proposed runtime reuses it for its seccomp pipeline.
+
+\textbf{Capability tracing.} The BCC \texttt{capable} tool~\cite{bcc2025} traces \texttt{cap\_capable} kernel calls and reports the capabilities the kernel actually checked. Recent BCC ships a \texttt{-{}-cgroupmap} option, which makes it possible to trace by cgroup rather than by PID, and therefore to cover child processes spawned after the trace started. This thesis builds the cgroup-wide cap-trace on top of that flag and on \texttt{bpftool}'s ability to pin a small BPF map under \texttt{/sys/fs/bpf}.
+
+\textbf{Policy frameworks.} Li et al.~\cite{li2021} demonstrate automatic generation of inter-service access-control policies in microservices through static analysis. Mattetti and Allouche~\cite{mattetti2020} propose a comprehensive automatic-hardening framework. Pothula et al.~\cite{pothula2019} develop a security-control map for runtime container hardening.
+
+\textbf{Threat modelling.} Wong et al.~\cite{wong2023} apply STRIDE to the container supply chain and confirm that defence in depth is required across image, runtime, and orchestrator. Getahun~\cite{getahun2021} extends the analysis with concrete mitigation strategies.
+
+\section{Competitive Landscape}\label{sec:competitive}
+
+Putting the literature together, the design space for ``my container should not be able to do anything it does not need to do'' contains four families of solutions. Table~\ref{tab:competitors} summarises the trade-offs that motivate this thesis.
+
+\begin{table}[ht]
+\centering
+\caption{Approaches to container confinement and the operational cost they impose.}
+\label{tab:competitors}
+\begin{tabular}{p{3.0cm}p{3.5cm}p{4.5cm}p{2.8cm}}
+\toprule
+\textbf{Approach} & \textbf{Examples} & \textbf{Operational cost} & \textbf{Realistic adopter} \\
+\midrule
+Sandboxed runtime & gVisor, Kata Containers & 20--100\% perf overhead; new runtime to operate; partial syscall compatibility~\cite{wang2022,viktorsson2020} & Multi-tenant infra; regulated workloads \\
+Manual profile authoring & Hand-written seccomp/AppArmor & Hours--days per service; deep kernel/syscall expertise; brittle to dependency updates & Niche, high-assurance \\
+CI-side recorder & SPO~\cite{spo2025}, Inspektor Gadget~\cite{inspektorgadget2025}, Tetragon~\cite{tetragon2025} & Kubernetes cluster + recorder + storage; DevSecOps engineer or experienced QA team; profile-pinning workflow & Mid--large orgs already on k8s \\
+\textbf{Runtime-side scanner (this work)} & Forked \texttt{runc} with \texttt{-{}-security-scan} & Single CLI flag; one-time host setup (BCC, \texttt{bpftool}, \texttt{oci-seccomp-bpf-hook}); no cluster & Solo devs, startups, small teams \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Three observations follow from Table~\ref{tab:competitors}.
+
+First, sandboxes are not really a competitor on the same axis: they accept a permanent runtime cost in exchange for stronger kernel isolation, and they do not produce reusable profiles. They remain in scope for the comparative evaluation because operators frequently consider them as the alternative when default \texttt{runc} feels too permissive.
+
+Second, manual authoring is dominated by every other approach. It is included only as a baseline for the qualitative comparison. The combinatorial explosion across services and dependency versions makes it economically unviable outside very specific niches.
+
+Third, the meaningful peers of the proposed runtime are the CI-side recorders. SPO, Inspektor Gadget, and Tetragon can in principle produce a profile of similar quality to the one this work emits in a single \texttt{runc run}; with sufficient engineering they can probably exceed it (more workloads recorded, more environments observed, longer recording windows, profile diffing across releases). The cost, however, is a Kubernetes cluster, a recorder DaemonSet, a storage layer for the profiles, and at least one engineer who knows the moving parts. The proposed runtime trades that ceiling for a much lower floor: a single developer with one CLI flag can reach a comparable result. The hypothesis that motivates the rest of this thesis is that this floor matters for the long tail of teams that cannot staff a DevSecOps function.
+
+\section{Research Gap}
+
+\textbf{Gap 1.} Existing runtime comparisons~\cite{wang2022,volpert2024,viktorsson2020} pit default \texttt{runc} against sandboxes; no published study evaluates a properly hardened \texttt{runc} against the same sandboxes.
+
+\textbf{Gap 2.} Automated profile generation~\cite{lopes2020,canella2021} and cluster-side recorders~\cite{spo2025,inspektorgadget2025} both exist, but neither delivers an integrated runtime experience usable without cluster infrastructure or platform expertise.
+
+\textbf{Gap 3.} Even when individual mechanisms (seccomp, AppArmor, capabilities) are automated separately, no published runtime ties all three together as a default workflow that is invokable by a single developer.
+
+This thesis closes the three gaps by implementing the runtime described in Chapter~\ref{ch:design} and evaluating it as outlined in Chapter~\ref{ch:impl}.
