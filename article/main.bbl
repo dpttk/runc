@@ -1,0 +1,45 @@
+\begin{thebibliography}{10}
+\providecommand{\url}[1]{\texttt{#1}}
+\providecommand{\urlprefix}{URL }
+\providecommand{\doi}[1]{https://doi.org/#1}
+
+\bibitem{canella2021}
+Canella, C., et~al.: Automating seccomp filter generation for linux applications. In: Proceedings of ACM CCS 2021. pp. 2137--2152. ACM (2021)
+
+\bibitem{tetragon2025}
+{Cilium / Isovalent}: Tetragon: ebpf-based security observability and runtime enforcement. \url{https://github.com/cilium/tetragon} (2025), accessed 2026-04-19
+
+\bibitem{ociseccompbpfhook}
+{containers organisation}: oci-seccomp-bpf-hook: Oci prestart hook that traces syscalls and emits a seccomp profile. \url{https://github.com/containers/oci-seccomp-bpf-hook} (2024), accessed 2026-04-19
+
+\bibitem{flauzac2020}
+Flauzac, O., Gonzalez, C., Nolot, F.: A review of native container security for running applications. International Journal of Computer Science and Engineering  \textbf{22}(3),  187--204 (2020)
+
+\bibitem{inspektorgadget2025}
+{Inspektor Gadget contributors}: Inspektor gadget: collection of ebpf-based tools for inspecting and debugging kubernetes workloads. \url{https://github.com/inspektor-gadget/inspektor-gadget} (2025), accessed 2026-04-19
+
+\bibitem{bcc2025}
+{IO Visor / iovisor}: Bcc: Tools for bpf-based linux io analysis, networking, monitoring, and more (\texttt{capable}, \texttt{capable-bpfcc}). \url{https://github.com/iovisor/bcc} (2025), accessed 2026-04-19
+
+\bibitem{spo2025}
+{Kubernetes SIG Auth, kubernetes-sigs}: Security profiles operator. \url{https://github.com/kubernetes-sigs/security-profiles-operator} (2025), accessed 2026-04-19
+
+\bibitem{lopes2020}
+Lopes, N., Martins, R., Correia, M.E., Serrano, S., Nunes, F.: Container hardening through automated seccomp profiling. In: Proceedings of the 6th International Workshop on Container Technologies and Container Clouds. pp. 31--36. ACM (2020). \doi{10.1145/3429885.3429966}
+
+\bibitem{mattetti2020}
+Mattetti, M., Allouche, Y.: Automatic security hardening and protection of linux containers. Security and Privacy in Communication Systems  (2020)
+
+\bibitem{viktorsson2020}
+Viktorsson, W., Klein, C., Tordsson, J.: Security-performance trade-offs of kubernetes container runtimes. In: 2020 IEEE MASCOTS. pp.~1--4. IEEE (2020)
+
+\bibitem{volpert2024}
+Volpert, S., Winkelhofer, S., Wesner, S., Domaschka, J.: An empirical analysis of common oci runtimes' performance isolation capabilities. In: Proceedings of the 15th ACM/SPEC International Conference on Performance Engineering. pp. 60--70. ACM (2024). \doi{10.1145/3629526.3645044}
+
+\bibitem{wang2023}
+Wang, K., et~al.: Characterizing and optimizing kernel resource isolation for containerized applications. Future Generation Computer Systems  \textbf{141},  234--247 (2023)
+
+\bibitem{wang2022}
+Wang, X., Johannesson, D.: Performance and isolation analysis of runc, gvisor and kata containers runtimes. Cluster Computing  \textbf{25},  2363--2380 (2022). \doi{10.1007/s10586-021-03517-8}
+
+\end{thebibliography}

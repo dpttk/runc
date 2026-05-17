@@ -1,0 +1,398 @@
+\documentclass[runningheads]{llncs}
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{amsmath}
+\usepackage{graphicx}
+\usepackage{url}
+\usepackage{array}
+\usepackage{booktabs}
+\usepackage{multirow}
+
+\begin{document}
+
+\title{Runtime-Side Security Profile Generation for OCI Containers}
+\titlerunning{Runtime-Side Security Profile Generation}
+
+\author{Ivan Platonov\inst{1} \and Andrey Sadovykh\inst{2}}
+\authorrunning{I. Platonov and A. Sadovykh}
+\institute{Innopolis University, Innopolis, Russia\\
+\email{i.platonov@innopolis.university}
+\and
+Softeam, Paris, France\\
+\email{andrey.sadovykh@softeam.fr}}
+
+\maketitle
+
+\begin{abstract}
+
+With still growing popularity of OCI containers, and raising popularity of AI offensive technologies, the need for protection of containerized workloads from malicious use is becoming more and more imporatant. Currently, there are 3 approaches to secure containers from malicious use: sandboxing, manual policy authoring, and cluster-side recorders. And all of them have their own trade-offs. Sandboxed runtimes such as gVisor reduce kernel exposure by interposing a user-space kernel or a microVM, yet impose substantial CPU, memory, and I/O overhead. Manual policy authoring requires kernel-level expertise and per-workload validation effort that most engineering teams cannot afford to sustain. Cluster-side recorders such as the Kubernetes Security Profiles Operator and Inspektor Gadget require Kubernetes cluster + recorder + storage; DevSecOps engineer or experienced QA team; profile-pinning workflow.
+
+This paper presents a security-oriented fork of \texttt{runc} in which profile generation is performed by the runtime itself. On a designated scanning invocation, the runtime executes the workload under in-memory relaxation of its confinement, traces the resulting kernel interactions through eBPF-based syscall and cgroup-scoped capability recorders combined with AppArmor learning mode, and writes a workload-specific seccomp allow-list, AppArmor profile, and minimised capability set back into the OCI bundle. Subsequent runs enforce these artefacts as ordinary OCI inputs, requiring no recorder stack, daemon, or cluster-side tooling; tracing logic ships as hidden sub-commands of the runtime binary, so the bundle gains data artefacts only and remains portable. The runtime is evaluated against unmodified \texttt{runc} and gVisor along three axes: runtime overhead, profile quality, and resistance to representative container-escape classes. The result [placeholder for now]
+
+\keywords{OCI runtime \and runc \and seccomp \and AppArmor \and Linux capabilities \and eBPF.}
+\end{abstract}
+
+\section{Introduction}
+
+Containers are now a standard deployment unit for cloud applications, but their isolation boundary remains fundamentally different from a virtual machine boundary. A container usually shares the host kernel with all other containers on the node, so kernel-facing attack surface matters directly to tenant isolation and host integrity~\cite{wang2023,flauzac2020}. The Open Container Initiative (OCI) standardises the runtime contract, and \texttt{runc} remains the reference implementation used under many higher-level container stacks. Its strength is compatibility and low overhead; its weakness is that strong confinement depends on policies supplied by the operator.
+
+Linux already exposes the mechanisms required for a narrower boundary. Seccomp filters syscalls, AppArmor restricts path-based filesystem access, and Linux capabilities split privileged root operations into smaller units. The problem is not the absence of mechanisms, but the cost of producing profiles that are strict enough to be useful and still broad enough not to break the workload. In practice, profile authoring often requires kernel knowledge, representative tests, and repeated debugging. Small teams therefore tend to keep default profiles or disable hardening when it conflicts with delivery pressure.
+
+This paper asks whether the runtime itself can reduce that cost. The proposed system is a fork of \texttt{runc} with a scanning mode invoked as part of a normal runtime command. During a scan, the runtime relaxes the bundle specification in memory, installs recording hooks, executes the workload, and writes generated artefacts back to the bundle. The scan is not an enforcement run; it is a learning phase intended for local testing or continuous integration. Subsequent runs use the generated seccomp, AppArmor, and capability policies as normal runtime inputs.
+
+The contribution is threefold. First, the runtime exposes profile generation as a single-flag workflow rather than a separate recorder stack. Second, it combines three confinement mechanisms in one pipeline: syscall recording through \texttt{oci-seccomp-bpf-hook}, cgroup-wide capability tracing through BCC and \texttt{bpftool}, and AppArmor learning in complain mode. Third, it keeps scanner hooks inside the runtime binary itself, preserving the OCI bundle's portability and avoiding generated scripts in the bundle directory.
+
+The remainder of the paper is organised as follows. Section~\ref{sec:implementation} describes the runtime design and implementation. Section~\ref{sec:evaluation} defines the evaluation methodology. Section~\ref{sec:analysis} analyses the expected security and operational trade-offs. Section~\ref{sec:related} positions the work against sandboxed runtimes, manual hardening, and cluster-side recorders. Section~\ref{sec:conclusion} concludes.
+
+\section{Implementation}\label{sec:implementation}
+
+\subsection{Runtime Architecture}
+
+The implementation extends the normal \texttt{runc run} and \texttt{runc create} paths with an optional scanning branch. If the user does not pass \texttt{-{}-security-scan}, the runtime executes the bundle using the ordinary OCI specification. If the flag is present, the runtime performs five steps: it relaxes confinement in memory, installs hooks, runs the container, stops tracers, and finalises the generated profile set.
+
+The relaxation step is deliberately in-memory. The on-disk \texttt{config.json} is not widened before the run. Instead, the runtime clears seccomp, clears the SELinux label, disables \texttt{NoNewPrivileges}, grants all known capabilities to the process, and replaces any AppArmor profile with a generated complain-mode profile. This makes the trace complete: a policy that remains active during recording would hide legitimate behaviour and produce a profile that breaks later enforcement.
+
+The generated artefacts are written under \texttt{generated/} in the bundle directory. Table~\ref{tab:artefacts} summarises the stable output contract.
+
+\begin{table}
+\caption{Artefacts produced by a scan run.}
+\label{tab:artefacts}
+\centering
+\begin{tabular}{p{4.0cm}p{7.2cm}}
+\toprule
+\textbf{Artefact} & \textbf{Purpose} \\
+\midrule
+\texttt{seccomp.json} & OCI seccomp allow-list produced by syscall tracing. \\
+\texttt{capable-bpfcc.log} & Raw cgroup-wide capability trace consumed by finalisation. \\
+\texttt{apparmor.profile} & Generated AppArmor profile loaded in complain mode during the scan. \\
+\texttt{apparmor-load.log} & Loader diagnostics from \texttt{apparmor\_parser}. \\
+\texttt{capabilities-from-proc-status.txt} & Diagnostic snapshot of granted capabilities. \\
+\texttt{spec.original.json} & Backup of the pre-scan specification. \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Capability Narrowing}
+
+The capability pipeline is the most important part of finalisation because it mutates the active \texttt{config.json}. The scanner runs BCC's \texttt{capable-bpfcc}, which observes \texttt{cap\_capable} checks in the kernel~\cite{bcc2025}. A plain PID filter is insufficient because many workloads fork child processes after the container init has started. The implementation therefore uses \texttt{capable-bpfcc -{}-cgroupmap}: it resolves the container cgroup, creates and pins a BPF map through \texttt{bpftool}, inserts the cgroup inode into that map, and starts the tracer against the pinned map.
+
+Finalisation parses the capability log, normalises names to OCI \texttt{CAP\_*} spelling, and replaces all five capability buckets: bounding, effective, permitted, inheritable, and ambient. The update is narrowing, not merging. If the trace contains no capability use, the resulting capability set is empty. This invariant prevents repeated scans from drifting toward broader defaults and matches the principle that a scan should never grant a privilege that was not observed.
+
+\subsection{Seccomp and AppArmor Recording}
+
+Syscall recording is delegated to \texttt{oci-seccomp-bpf-hook}, a maintained OCI hook also used in container tooling for seccomp tracing~\cite{ociseccompbpfhook}. The runtime sets the required tracing annotation and installs the hook as a prestart hook. The resulting \texttt{seccomp.json} is left as an explicit artefact for later enforcement rather than merged with any previous profile.
+
+AppArmor recording follows the standard complain-mode workflow. The runtime writes a uniquely named profile, loads it with \texttt{apparmor\_parser}, assigns it to the container process, and unloads it after the container stops. Denials are logged by the host and can be refined with \texttt{aa-logprof}. If AppArmor is unavailable, the profile file is still generated, but the runtime reports that the host cannot load it.
+
+\subsection{Self-Exec Hooks}
+
+Early prototypes generated shell scripts inside the bundle for hook logic. That design was rejected because it made the scan mutate the bundle with executable artefacts. The current implementation registers hidden runtime sub-commands such as \texttt{scan-aa-load}, \texttt{scan-cap-trace-start}, and \texttt{scan-cap-trace-stop}. OCI hooks point back to the running \texttt{runc} binary, and parameters are passed through hook environment variables. Each sub-command drains hook state from standard input and writes diagnostics under \texttt{generated/}. The bundle therefore gains data artefacts only, not executable helper scripts.
+
+\section{Evaluation}\label{sec:evaluation}
+
+The evaluation is designed to measure whether runtime-side profile generation can improve confinement while preserving the low overhead of a traditional OCI runtime. The comparison uses four configurations:
+
+\begin{itemize}
+\item default \texttt{runc}, representing the compatibility baseline;
+\item the proposed runtime without scan-generated enforcement, isolating the cost of runtime changes;
+\item the proposed runtime after a scan-then-enforce cycle;
+\item gVisor representing user-space-kernel and microVM sandboxing.
+\end{itemize}
+
+The workload set combines small services and application-like targets. Minimal workloads such as \texttt{busybox}, \texttt{nginx}, and \texttt{redis} provide low-noise performance baselines. A larger application target such as OWASP Juice Shop exercises a more realistic process tree and filesystem footprint. The matrix is intended to run on a fixed Ubuntu 24.04 host with a 6.8-series kernel, cgroup v2, BCC tools, \texttt{bpftool}, AppArmor utilities, and \texttt{oci-seccomp-bpf-hook}.
+
+The measured dimensions are listed in Table~\ref{tab:metrics}. Performance numbers should be reported as medians and interquartile ranges after a warm-up run. Security-effectiveness measurements should be reported per attack class rather than collapsed into a single score, because different configurations block attacks at different layers.
+
+\begin{table}
+\caption{Evaluation metrics.}
+\label{tab:metrics}
+\centering
+\begin{tabular}{p{3.2cm}p{8.0cm}}
+\toprule
+\textbf{Metric family} & \textbf{Measurements} \\
+\midrule
+Performance & Startup latency, steady-state CPU, memory footprint, I/O bandwidth, and TCP throughput. \\
+Profile quality & Number of allowed syscalls, observed capabilities, AppArmor log entries, and generated artefact size. \\
+Security effectiveness & Blocked attempts for syscall-bound escapes, capability-bound escapes, filesystem breakouts, and runtime-CVE-inspired attacks. \\
+Operational cost & Required host dependencies, number of commands, generated files, and compatibility failures. \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+At the time of writing, the implementation and reporting schema are complete, while the final benchmark matrix is still pending. For that reason, this paper treats quantitative tables as the evaluation contract rather than as completed empirical claims. The important methodological point is that the proposed runtime should be compared both with default \texttt{runc} and with stronger isolation systems, because it targets a middle point: lower operational cost than cluster-side recording and lower runtime overhead than full sandboxing.
+
+\section{Analysis}\label{sec:analysis}
+
+\subsection{Security Properties}
+
+The scanner improves security by reducing the default privileges available to a later enforcement run. Seccomp removes unused syscalls from the kernel boundary; capability narrowing removes unused privileged operations; AppArmor adds path-based visibility and eventual confinement. These mechanisms are complementary: a capability profile can block privileged kernel checks, seccomp can remove entire syscall families, and AppArmor can restrict filesystem effects even when a syscall itself remains allowed.
+
+The strongest invariant is that finalisation never widens the on-disk capability set. A profile generator that merges current observations with previous broad defaults would be operationally convenient but insecure by construction. The proposed runtime instead treats the scan as evidence: only observed capabilities survive. This makes the scan sensitive to test coverage, but it also makes the result auditable.
+
+The cgroup-wide tracer closes a common blind spot in dynamic profiling. PID-based recording can miss helpers, workers, shell pipelines, and language runtime children. Filtering by cgroup better matches the container abstraction and is especially important for workloads that spawn subprocesses after initialisation.
+
+\subsection{Limitations}
+
+The design inherits the limitations of dynamic tracing. A scan only records behaviour that actually happens during the scan window. Rare error paths, scheduled jobs, migration scripts, certificate renewal, and feature-flagged code can be missed. The practical mitigation is to run scans under end-to-end tests that exercise representative behaviour.
+
+Root workloads are another limitation. Some capability checks are bypassed or under-reported for tasks running as UID 0, so scans of rootful workloads can produce incomplete capability evidence. The runtime warns about this case but does not rewrite the configured user, because doing so could change workload semantics.
+
+Finally, AppArmor refinement remains partly manual. The runtime can generate and load a complain-mode profile, but turning audit logs into a production-quality policy is still an operator step. This is an intentional boundary: automating \texttt{aa-logprof} decisions without context would risk either overfitting or allowing too much.
+
+\subsection{Operational Trade-Off}
+
+The proposed runtime does not replace sandboxed runtimes for high-assurance multi-tenant isolation. gVisor reduce host-kernel exposure more fundamentally by interposing a user-space kernel or a microVM~\cite{wang2022,viktorsson2020}. The runtime-side scanner instead targets the large class of deployments where default \texttt{runc} is attractive for performance and compatibility, but profile authoring is too expensive. Its value is reducing the setup cost from a recorder stack to a runtime flag.
+
+\section{Related Work}\label{sec:related}
+
+Prior work on container runtime comparison consistently shows that \texttt{runc} is fast but weaker as an isolation boundary, while gVisor trade overhead for stronger isolation~\cite{wang2022,volpert2024,viktorsson2020}. Those studies usually compare against default \texttt{runc}. This paper instead asks what a traditional runtime can achieve when workload-specific policies are generated automatically.
+
+Automated seccomp generation has been studied directly by Lopes et al.~\cite{lopes2020}, and static or hybrid approaches can recover paths that pure tracing may miss~\cite{canella2021}. The proposed runtime follows the dynamic tracing line but integrates it into the OCI runtime path and combines it with capabilities and AppArmor. Mattetti and Allouche~\cite{mattetti2020} similarly argue for layered hardening across seccomp and mandatory access control.
+
+Cluster-side recorders such as the Kubernetes Security Profiles Operator and tools such as Inspektor Gadget generate or assist with security profiles in Kubernetes environments~\cite{spo2025,inspektorgadget2025}. Tetragon uses eBPF for runtime observability and enforcement-oriented monitoring~\cite{tetragon2025}. These systems are powerful, but they assume cluster infrastructure and operational expertise. The proposed runtime addresses the same policy-generation problem one layer lower, for developers who can run a container but cannot operate a recorder stack.
+
+\section{Conclusion}\label{sec:conclusion}
+
+This paper presented a \texttt{runc} fork that turns workload-specific profile generation into a runtime-side workflow. A single scanning flag records syscalls, capability checks, and AppArmor-relevant behaviour, then emits artefacts that can be used for later enforcement. The implementation keeps the scan explicit, keeps relaxation in memory, avoids generated executable hooks, and narrows capabilities according to observed behaviour.
+
+The main result is architectural rather than a claim of completed benchmarking: profile generation can live inside the OCI runtime without requiring a Kubernetes recorder, a separate daemon, or manual policy authoring. The expected trade-off is a practical middle ground between default \texttt{runc} and heavier sandboxed runtimes. Future work should complete the benchmark matrix, add static augmentation for missed paths, emit Security Profiles Operator-compatible resources, and compare generated profiles head-to-head against cluster-side recorders.
+
+\bibliographystyle{splncs04}
+\bibliography{ref}
+
+\end{document}
+\documentclass[runningheads]{llncs}
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{amsmath,amsfonts}
+\usepackage{graphicx}
+\usepackage{url}
+\usepackage{array}
+\usepackage{multirow}
+\usepackage{booktabs}
+\usepackage{float}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning,shapes.geometric,shapes.multipart,fit,backgrounds,calc}
+
+% The thesis sources use report-style chapters. These aliases keep the
+% original source files untouched while rendering them in the LLNCS hierarchy.
+\let\llncssection\section
+\let\llncssubsection\subsection
+\let\llncssubsubsection\subsubsection
+\renewcommand{\chapter}[1]{\llncssection{#1}}
+\renewcommand{\section}[1]{\llncssubsection{#1}}
+\renewcommand{\subsection}[1]{\llncssubsubsection{#1}}
+
+\begin{document}
+
+\title{Runtime-Side Security Profile Generation for OCI Containers}
+\titlerunning{Runtime-Side Security Profile Generation}
+
+\author{Ivan Platonov and Andrey Sadovykh}
+\authorrunning{I. Platonov and A. Sadovykh}
+\institute{Innopolis University\\
+\email{i.platonov@innopolis.university, andrey.sadovykh@softeam.fr}}
+
+\maketitle
+
+\begin{abstract}
+The Open Container Initiative (OCI) decouples image format, runtime, and tooling so that the same image can be executed by different runtimes and orchestrated by yet another control plane. This modularity, together with the open-source nature of the reference runtime \texttt{runc}, makes the runtime layer itself a viable place to enforce security defaults, rather than relying on operators to supply hand-written seccomp, AppArmor, and capability profiles for every workload.
+
+This thesis presents a security-first fork of \texttt{runc} that (i)~ships with a minimal default capability set instead of the historical Docker fourteen, (ii)~adds a single \texttt{-{}-security-scan} flag that, during a regular \texttt{runc run}, traces the workload via eBPF and emits cgroup-wide capability traces, a syscall allow-list, and an AppArmor complain-mode profile, and (iii)~narrows the on-disk \texttt{config.json} to exactly the privileges that the workload actually exercised. All hooks are shipped inside the runtime binary itself via hidden \texttt{scan-*} sub-commands, so the OCI bundle never has to embed executable artefacts.
+
+The runtime is evaluated against four alternative families of solutions: sandboxed runtimes (gVisor), manual policy authoring, cluster-side recorders such as the Kubernetes Security Profiles Operator and Inspektor Gadget, and Tetragon-style observability stacks. The central claim is that, while a properly staffed CI/DevSecOps pipeline can match or exceed the security level produced by this work, the runtime-side scanner reaches a comparable result with a single CLI flag and no cluster prerequisites, putting automatic confinement within reach of teams that cannot afford a dedicated security engineer.
+
+A companion infrastructure repository (Terraform on Yandex Cloud, Ansible provisioning, a self-hosted GitHub Actions runner, and a per-bundle scan matrix) packages the full evaluation pipeline as additional achievement and is described in a dedicated chapter.
+
+\keywords{OCI runtime \and runc \and seccomp \and AppArmor \and Linux capabilities \and eBPF.}
+\end{abstract}
+
+\input{../thesis/overleaf/chapters/chapter1}
+\input{../thesis/overleaf/chapters/chapter2}
+\input{../thesis/overleaf/chapters/chapter3}
+\input{../thesis/overleaf/chapters/chapter4}
+\input{../thesis/overleaf/chapters/chapter5}
+\input{../thesis/overleaf/chapters/chapter6}
+
+\appendix
+\input{../thesis/overleaf/chapters/appex}
+
+\bibliographystyle{splncs04}
+\bibliography{ref}
+
+\end{document}
+% This is samplepaper.tex, a sample chapter demonstrating the
+% LLNCS macro package for Springer Computer Science proceedings;
+% Version 2.21 of 2022/01/12
+%
+\documentclass[runningheads]{llncs}
+%
+\usepackage[T1]{fontenc}
+% T1 fonts will be used to generate the final print and online PDFs,
+% so please use T1 fonts in your manuscript whenever possible.
+% Other font encondings may result in incorrect characters.
+%
+\usepackage{graphicx}
+% Used for displaying a sample figure. If possible, figure files should
+% be included in EPS format.
+%
+% If you use the hyperref package, please uncomment the following two lines
+% to display URLs in blue roman font according to Springer's eBook style:
+%\usepackage{color}
+%\renewcommand\UrlFont{\color{blue}\rmfamily}
+%\urlstyle{rm}
+%
+\begin{document}
+%
+\title{Contribution Title}
+%
+%\titlerunning{Abbreviated paper title}
+% If the paper title is too long for the running head, you can set
+% an abbreviated paper title here
+%
+\author{First Author\inst{1}\orcidID{0000-1111-2222-3333} \and
+Second Author\inst{2,3}\orcidID{1111-2222-3333-4444} \and
+Third Author\inst{3}\orcidID{2222--3333-4444-5555}}
+%
+\authorrunning{F. Author et al.}
+% First names are abbreviated in the running head.
+% If there are more than two authors, 'et al.' is used.
+%
+\institute{Princeton University, Princeton NJ 08544, USA \and
+Springer Heidelberg, Tiergartenstr. 17, 69121 Heidelberg, Germany
+\email{lncs@springer.com}\\
+\url{http://www.springer.com/gp/computer-science/lncs} \and
+ABC Institute, Rupert-Karls-University Heidelberg, Heidelberg, Germany\\
+\email{\{abc,lncs\}@uni-heidelberg.de}}
+%
+\maketitle              % typeset the header of the contribution
+%
+\begin{abstract}
+The abstract should briefly summarize the contents of the paper in
+150--250 words.
+
+\keywords{First keyword  \and Second keyword \and Another keyword.}
+\end{abstract}
+%
+%
+%
+\section{First Section}
+\subsection{A Subsection Sample}
+Please note that the first paragraph of a section or subsection is
+not indented. The first paragraph that follows a table, figure,
+equation etc. does not need an indent, either.
+
+Subsequent paragraphs, however, are indented.
+
+\subsubsection{Sample Heading (Third Level)} Only two levels of
+headings should be numbered. Lower level headings remain unnumbered;
+they are formatted as run-in headings.
+
+\paragraph{Sample Heading (Fourth Level)}
+The contribution should contain no more than four levels of
+headings. Table~\ref{tab1} gives a summary of all heading levels.
+
+\begin{table}
+\caption{Table captions should be placed above the
+tables.}\label{tab1}
+\begin{tabular}{|l|l|l|}
+\hline
+Heading level &  Example & Font size and style\\
+\hline
+Title (centered) &  {\Large\bfseries Lecture Notes} & 14 point, bold\\
+1st-level heading &  {\large\bfseries 1 Introduction} & 12 point, bold\\
+2nd-level heading & {\bfseries 2.1 Printing Area} & 10 point, bold\\
+3rd-level heading & {\bfseries Run-in Heading in Bold.} Text follows & 10 point, bold\\
+4th-level heading & {\itshape Lowest Level Heading.} Text follows & 10 point, italic\\
+\hline
+\end{tabular}
+\end{table}
+
+
+\noindent Displayed equations are centered and set on a separate
+line.
+\begin{equation}
+x + y = z
+\end{equation}
+Please try to avoid rasterized images for line-art diagrams and
+schemas. Whenever possible, use vector graphics instead (see
+Fig.~\ref{fig1}).
+
+\begin{figure}
+\includegraphics[width=\textwidth]{fig1.eps}
+\caption{A figure caption is always placed below the illustration.
+Please note that short captions are centered, while long ones are
+justified by the macro package automatically.} \label{fig1}
+\end{figure}
+
+\begin{theorem}
+This is a sample theorem. The run-in heading is set in bold, while
+the following text appears in italics. Definitions, lemmas,
+propositions, and corollaries are styled the same way.
+\end{theorem}
+%
+% the environments 'definition', 'lemma', 'proposition', 'corollary',
+% 'remark', and 'example' are defined in the LLNCS documentclass as well.
+%
+\begin{proof}
+Proofs, examples, and remarks have the initial word in italics,
+while the following text appears in normal font.
+\end{proof}
+For citations of references, we prefer the use of square brackets
+and consecutive numbers. Citations using labels or the author/year
+convention are also acceptable. The following bibliography provides
+a sample reference list with entries for journal
+articles~\cite{ref_article1}, an LNCS chapter~\cite{ref_lncs1}, a
+book~\cite{ref_book1}, proceedings without editors~\cite{ref_proc1},
+and a homepage~\cite{ref_url1}. Multiple citations are grouped
+\cite{ref_article1,ref_lncs1,ref_book1},
+\cite{ref_article1,ref_book1,ref_proc1,ref_url1}.
+
+\begin{credits}
+\subsubsection{\ackname} A bold run-in heading in small font size at the end of the paper is
+used for general acknowledgments, for example: This study was funded
+by X (grant number Y).
+
+\subsubsection{\discintname}
+It is now necessary to declare any competing interests or to specifically
+state that the authors have no competing interests. Please place the
+statement with a bold run-in heading in small font size beneath the
+(optional) acknowledgments\footnote{If EquinOCS, our proceedings submission
+system, is used, then the disclaimer can be provided directly in the system.},
+for example: The authors have no competing interests to declare that are
+relevant to the content of this article. Or: Author A has received research
+grants from Company W. Author B has received a speaker honorarium from
+Company X and owns stock in Company Y. Author C is a member of committee Z.
+\end{credits}
+%
+% ---- Bibliography ----
+%
+% BibTeX users should specify bibliography style 'splncs04'.
+% References will then be sorted and formatted in the correct style.
+%
+% \bibliographystyle{splncs04}
+% \bibliography{mybibliography}
+%
+\begin{thebibliography}{8}
+\bibitem{ref_article1}
+Author, F.: Article title. Journal \textbf{2}(5), 99--110 (2016)
+
+\bibitem{ref_lncs1}
+Author, F., Author, S.: Title of a proceedings paper. In: Editor,
+F., Editor, S. (eds.) CONFERENCE 2016, LNCS, vol. 9999, pp. 1--13.
+Springer, Heidelberg (2016). \doi{10.10007/1234567890}
+
+\bibitem{ref_book1}
+Author, F., Author, S., Author, T.: Book title. 2nd edn. Publisher,
+Location (1999)
+
+\bibitem{ref_proc1}
+Author, A.-B.: Contribution title. In: 9th International Proceedings
+on Proceedings, pp. 1--2. Publisher, Location (2010)
+
+\bibitem{ref_url1}
+LNCS Homepage, \url{http://www.springer.com/lncs}, last accessed 2023/10/25
+\end{thebibliography}
+\end{document}
