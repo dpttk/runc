@@ -51,7 +51,7 @@ The remainder of the paper is organised as follows. Section~\ref{sec:implementat
 
 The implementation extends the normal \texttt{runc run} and \texttt{runc create} paths with an optional scanning branch. If the user does not pass \texttt{-{}-security-scan}, the runtime executes the bundle using the ordinary OCI specification. If the flag is present, the runtime performs five steps: it relaxes confinement in memory, installs hooks, runs the container, stops tracers, and finalises the generated profile set.
 
-The relaxation step is deliberately in-memory. The on-disk \texttt{config.json} is not widened before the run. Instead, the runtime clears seccomp, clears the SELinux label, disables \texttt{NoNewPrivileges}, grants all known capabilities to the process, and replaces any AppArmor profile with a generated complain-mode profile. This makes the trace complete: a policy that remains active during recording would hide legitimate behaviour and produce a profile that breaks later enforcement.
+The relaxation step is deliberately in-memory. The on-disk \texttt{config.json} is not widened before the run. Instead, the runtime clears seccomp, clears the SELinux label, disables \texttt{NoNewPrivileges}, grants all known capabilities to the process, and replaces any AppArmor profile with a generated complain-mode profile. This makes the trace complete: a policy that remains active during recording would hide legitimate behaviour and produce a profile that breaks application.
 
 The generated artefacts are written under \texttt{generated/} in the bundle directory. Table~\ref{tab:artefacts} summarises the stable output contract.
 
@@ -59,15 +59,15 @@ The generated artefacts are written under \texttt{generated/} in the bundle dire
 \caption{Artefacts produced by a scan run.}
 \label{tab:artefacts}
 \centering
-\begin{tabular}{p{4.0cm}p{7.2cm}}
+\begin{tabular}{p{4.2cm}p{7.0cm}}
 \toprule
 \textbf{Artefact} & \textbf{Purpose} \\
 \midrule
 \texttt{seccomp.json} & OCI seccomp allow-list produced by syscall tracing. \\
 \texttt{capable-bpfcc.log} & Raw cgroup-wide capability trace consumed by finalisation. \\
-\texttt{apparmor.profile} & Generated AppArmor profile loaded in complain mode during the scan. \\
+\texttt{apparmor.profile} & Generated AppArmor profile: loaded in complain mode during the scan, then updated from collected audit denials for enforcement. \\
 \texttt{apparmor-load.log} & Loader diagnostics from \texttt{apparmor\_parser}. \\
-\texttt{capabilities-from-proc-status.txt} & Diagnostic snapshot of granted capabilities. \\
+\begin{tabular}[t]{@{}l@{}}\texttt{capabilities-from-}\\\texttt{proc-status.txt}\end{tabular} & Diagnostic snapshot of granted capabilities. \\
 \texttt{spec.original.json} & Backup of the pre-scan specification. \\
 \bottomrule
 \end{tabular}
@@ -77,17 +77,17 @@ The generated artefacts are written under \texttt{generated/} in the bundle dire
 
 The capability pipeline is the most important part of finalisation because it mutates the active \texttt{config.json}. The scanner runs BCC's \texttt{capable-bpfcc}, which observes \texttt{cap\_capable} checks in the kernel~\cite{bcc2025}. A plain PID filter is insufficient because many workloads fork child processes after the container init has started. The implementation therefore uses \texttt{capable-bpfcc -{}-cgroupmap}: it resolves the container cgroup, creates and pins a BPF map through \texttt{bpftool}, inserts the cgroup inode into that map, and starts the tracer against the pinned map.
 
-Finalisation parses the capability log, normalises names to OCI \texttt{CAP\_*} spelling, and replaces all five capability buckets: bounding, effective, permitted, inheritable, and ambient. The update is narrowing, not merging. If the trace contains no capability use, the resulting capability set is empty. This invariant prevents repeated scans from drifting toward broader defaults and matches the principle that a scan should never grant a privilege that was not observed.
+Finalisation parses the capability log, normalises names to OCI \texttt{CAP\_*} spelling, and replaces all five capability buckets: bounding, effective, permitted, inheritable, and ambient. The update is a rebuild from evidence, not a merge with previous or default capability sets: the final set starts empty and is extended only with capabilities observed by the scanner. If the trace contains no capability use, the resulting capability set is empty. This invariant prevents repeated scans from drifting toward broader defaults and matches the principle that a scan should not keep a privilege only because it appeared in an earlier configuration.
 
 \subsection{Seccomp and AppArmor Recording}
 
 Syscall recording is delegated to \texttt{oci-seccomp-bpf-hook}, a maintained OCI hook also used in container tooling for seccomp tracing~\cite{ociseccompbpfhook}. The runtime sets the required tracing annotation and installs the hook as a prestart hook. The resulting \texttt{seccomp.json} is left as an explicit artefact for later enforcement rather than merged with any previous profile.
 
-AppArmor recording follows the standard complain-mode workflow. The runtime writes a uniquely named profile, loads it with \texttt{apparmor\_parser}, assigns it to the container process, and unloads it after the container stops. Denials are logged by the host and can be refined with \texttt{aa-logprof}. If AppArmor is unavailable, the profile file is still generated, but the runtime reports that the host cannot load it.
+AppArmor recording follows a complain-mode workflow. The runtime writes a uniquely named profile, loads it with \texttt{apparmor\_parser}, assigns it to the container process, and unloads it after the container stops. During post-stop finalisation it collects host audit denials for that profile, translates supported file and capability events into profile rules, and switches the generated profile to enforcement when rules were collected. If AppArmor is unavailable, the profile file is still generated, but the runtime reports that the host cannot load it.
 
 \subsection{Self-Exec Hooks}
 
-Early prototypes generated shell scripts inside the bundle for hook logic. That design was rejected because it made the scan mutate the bundle with executable artefacts. The current implementation registers hidden runtime sub-commands such as \texttt{scan-aa-load}, \texttt{scan-cap-trace-start}, and \texttt{scan-cap-trace-stop}. OCI hooks point back to the running \texttt{runc} binary, and parameters are passed through hook environment variables. Each sub-command drains hook state from standard input and writes diagnostics under \texttt{generated/}. The bundle therefore gains data artefacts only, not executable helper scripts.
+The current implementation registers hidden runtime sub-commands such as \texttt{scan-aa-load}, \texttt{scan-cap-trace-start}, and \texttt{scan-cap-trace-stop}. OCI hooks point back to the running \texttt{runc} binary, and parameters are passed through hook environment variables. Each sub-command drains hook state from standard input and writes diagnostics under \texttt{generated/}. The bundle therefore gains data artefacts only, not executable helper scripts.
 
 \section{Evaluation}\label{sec:evaluation}
 
@@ -95,12 +95,11 @@ The evaluation is designed to measure whether runtime-side profile generation ca
 
 \begin{itemize}
 \item default \texttt{runc}, representing the compatibility baseline;
-\item the proposed runtime without scan-generated enforcement, isolating the cost of runtime changes;
-\item the proposed runtime after a scan-then-enforce cycle;
+\item the proposed runtime with scan-generated enforcement profiles;
 \item gVisor representing user-space-kernel and microVM sandboxing.
 \end{itemize}
 
-The workload set combines small services and application-like targets. Minimal workloads such as \texttt{busybox}, \texttt{nginx}, and \texttt{redis} provide low-noise performance baselines. A larger application target such as OWASP Juice Shop exercises a more realistic process tree and filesystem footprint. The matrix is intended to run on a fixed Ubuntu 24.04 host with a 6.8-series kernel, cgroup v2, BCC tools, \texttt{bpftool}, AppArmor utilities, and \texttt{oci-seccomp-bpf-hook}.
+The workload set combines small services and application-like targets. Minimal workloads such as \texttt{busybox}, \texttt{nginx}, and \texttt{redis} provide low-noise performance baselines. A larger application target such as XXXX provides a more realistic process tree and filesystem footprint. The matrix is intended to run on a fixedx Xxx, cgroup v2, BCC tools, \texttt{bpftool}, AppArmor utilities, and \texttt{oci-seccomp-bpf-hook}.
 
 The measured dimensions are listed in Table~\ref{tab:metrics}. Performance numbers should be reported as medians and interquartile ranges after a warm-up run. Security-effectiveness measurements should be reported per attack class rather than collapsed into a single score, because different configurations block attacks at different layers.
 
@@ -128,7 +127,7 @@ At the time of writing, the implementation and reporting schema are complete, wh
 
 The scanner improves security by reducing the default privileges available to a later enforcement run. Seccomp removes unused syscalls from the kernel boundary; capability narrowing removes unused privileged operations; AppArmor adds path-based visibility and eventual confinement. These mechanisms are complementary: a capability profile can block privileged kernel checks, seccomp can remove entire syscall families, and AppArmor can restrict filesystem effects even when a syscall itself remains allowed.
 
-The strongest invariant is that finalisation never widens the on-disk capability set. A profile generator that merges current observations with previous broad defaults would be operationally convenient but insecure by construction. The proposed runtime instead treats the scan as evidence: only observed capabilities survive. This makes the scan sensitive to test coverage, but it also makes the result auditable.
+The strongest invariant is that finalisation does not merge capability evidence with earlier broad defaults. A profile generator that unions current observations with previous capability sets would be operationally convenient but insecure by construction. The proposed runtime instead treats the scan as evidence: the output capability set is built from an empty set and only observed capabilities survive. This makes the scan sensitive to test coverage, but it also makes the result auditable.
 
 The cgroup-wide tracer closes a common blind spot in dynamic profiling. PID-based recording can miss helpers, workers, shell pipelines, and language runtime children. Filtering by cgroup better matches the container abstraction and is especially important for workloads that spawn subprocesses after initialisation.
 
@@ -138,7 +137,7 @@ The design inherits the limitations of dynamic tracing. A scan only records beha
 
 Root workloads are another limitation. Some capability checks are bypassed or under-reported for tasks running as UID 0, so scans of rootful workloads can produce incomplete capability evidence. The runtime warns about this case but does not rewrite the configured user, because doing so could change workload semantics.
 
-Finally, AppArmor refinement remains partly manual. The runtime can generate and load a complain-mode profile, but turning audit logs into a production-quality policy is still an operator step. This is an intentional boundary: automating \texttt{aa-logprof} decisions without context would risk either overfitting or allowing too much.
+Finally, AppArmor generation is automated for the common audit-denial cases but still requires validation for production use. The runtime collects denials, inserts supported file and capability rules, and can switch the generated profile from complain mode to enforcement. Manual review remains necessary for unhandled AppArmor operations, missed execution paths, and deciding whether the learned filesystem access is intentionally required or merely an artefact of the test run.
 
 \subsection{Operational Trade-Off}
 
