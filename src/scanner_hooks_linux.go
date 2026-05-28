@@ -138,12 +138,12 @@ func runScanAALoad() error {
 }
 
 // runScanAAUnload mirrors runScanAALoad for the poststop hook. Before
-// it removes the profile from the kernel it pulls every apparmor=
-// "DENIED" line for our profile out of the kernel audit ring and
-// appends the resulting rules to the on-disk profile, between sentinel
-// markers so finalizeSecurityScan knows the profile has graduated past
-// the empty stub stage. As with load, the unload itself is best-effort:
-// container teardown must not be blocked by a missing parser.
+// it removes the profile from the kernel it pulls AppArmor audit events
+// for our profile out of the kernel audit ring and appends the resulting
+// rules to the on-disk profile, between sentinel markers so
+// finalizeSecurityScan knows the profile has graduated past the empty
+// stub stage. As with load, the unload itself is best-effort: container
+// teardown must not be blocked by a missing parser.
 func runScanAAUnload() error {
 	st, err := readHookState()
 	if err != nil {

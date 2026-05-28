@@ -33,10 +33,12 @@ const appArmorScanReadme = `AppArmor (automatic with --security-scan)
 During the scan run runc writes generated/apparmor.profile (a stub in
 complain mode with abstractions/base, nameservice, ssl_certs included),
 loads it via apparmor_parser -r, sets process.apparmorProfile, and
-records every apparmor=DENIED audit line for the profile in the kernel
-ring. On poststop the runtime pulls those denials out of journalctl
-(or dmesg as a fallback), turns them into file and capability rules,
-and appends them between sentinel markers inside the profile body.
+records AppArmor policy audit events for the profile in the kernel
+ring. In complain mode these are usually apparmor=ALLOWED records for
+accesses that would have been denied in enforce mode. On poststop the
+runtime pulls those events out of journalctl (or dmesg as a fallback),
+turns them into file and capability rules, and appends them between
+sentinel markers inside the profile body.
 
 After the container exits, finalizeSecurityScan:
   * writes the profile name into process.apparmorProfile in config.json,

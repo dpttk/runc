@@ -22,14 +22,18 @@ import (
 // replaces the block in place rather than appending duplicate copies.
 const apparmorAuditMarkerEnd = "# --- END runc-scan audit-collected rules ---"
 
-// apparmorDeniedLineRegexp matches a kernel/audit log line that
-// reports an AppArmor denial. AppArmor formats denials roughly as:
+// apparmorAuditLineRegexp matches a kernel/audit log line that reports
+// an AppArmor policy event. In enforce mode AppArmor writes DENIED, but
+// in complain mode it usually writes ALLOWED for accesses that would
+// have been denied. Scan profiles run in complain mode, so both forms
+// must be treated as evidence for generated rules.
 //
 //	apparmor="DENIED" operation="open" profile="runc_scan_X" name="/etc/passwd" pid=1 comm="cat" requested_mask="r" denied_mask="r"
+//	apparmor="ALLOWED" operation="open" profile="runc_scan_X" name="/var/lib/app/file" pid=1 comm="python" requested_mask="wc" denied_mask="wc"
 //
 // The bare-value form (apparmor=DENIED, without quotes) appears in
-// some dmesg captures; both are accepted.
-var apparmorDeniedLineRegexp = regexp.MustCompile(`apparmor="?DENIED"?`)
+// some dmesg captures; both quoted and bare values are accepted.
+var apparmorAuditLineRegexp = regexp.MustCompile(`apparmor="?(DENIED|ALLOWED)"?`)
 
 // apparmorKeyValueRegexp pulls key="value" or key=value tokens out of
 // an audit line. AppArmor's audit format is space-separated; values
@@ -37,8 +41,8 @@ var apparmorDeniedLineRegexp = regexp.MustCompile(`apparmor="?DENIED"?`)
 // which we then skip).
 var apparmorKeyValueRegexp = regexp.MustCompile(`(\w+)=("([^"]*)"|(\S+))`)
 
-// appArmorDenialRecord is the structured form of one
-// apparmor="DENIED" line. Only fields the rule generator looks at
+// appArmorDenialRecord is the structured form of one AppArmor audit
+// event. Only fields the rule generator looks at
 // are decoded; the rest of the audit metadata is dropped.
 type appArmorDenialRecord struct {
 	Operation     string
@@ -51,16 +55,16 @@ type appArmorDenialRecord struct {
 }
 
 // parseApparmorDenials reads audit / journal output and returns the
-// denial records that target the given profile. Lines that do not
-// look like AppArmor denials, or denials for other profiles, are
-// silently dropped.
+// AppArmor policy events that target the given profile. Lines that do
+// not look like AppArmor policy events, or events for other profiles,
+// are silently dropped.
 func parseApparmorDenials(r io.Reader, profileName string) []appArmorDenialRecord {
 	out := make([]appArmorDenialRecord, 0)
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 64*1024), 1024*1024)
 	for sc.Scan() {
 		line := sc.Text()
-		if !apparmorDeniedLineRegexp.MatchString(line) {
+		if !apparmorAuditLineRegexp.MatchString(line) {
 			continue
 		}
 		rec := parseDenialLine(line)
@@ -329,7 +333,7 @@ func collectAndAppendAppArmorRules(profilePath, genDir string, logFile io.Writer
 		return nil
 	}
 	records := parseApparmorDenials(bytes.NewReader(audit), profileName)
-	fmt.Fprintf(logFile, "audit denials for %s: %d\n", profileName, len(records))
+	fmt.Fprintf(logFile, "audit events for %s: %d\n", profileName, len(records))
 	if len(records) == 0 {
 		return nil
 	}

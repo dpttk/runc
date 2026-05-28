@@ -14,14 +14,15 @@ Jan 14 12:00:02 host kernel: audit: type=1400 audit(1736942414.000:13): apparmor
 Jan 14 12:00:03 host kernel: audit: type=1400 audit(1736942415.000:14): apparmor="DENIED" operation="mknod" profile="runc_scan_x" name="/var/run/foo" pid=13 comm="cat" requested_mask="c" denied_mask="c"
 Jan 14 12:00:04 host kernel: audit: type=1400 audit(1736942416.000:15): apparmor="DENIED" operation="open" profile="runc_scan_other" name="/etc/shadow" pid=99 comm="cat" requested_mask="r" denied_mask="r"
 Jan 14 12:00:05 host kernel: audit: type=1400 audit(1736942417.000:16): apparmor="DENIED" operation="mount" profile="runc_scan_x" name="/proc" pid=14 comm="mount"
+Jan 14 12:00:06 host kernel: audit: type=1400 audit(1736942418.000:17): apparmor="ALLOWED" operation="open" profile="runc_scan_x" name="/var/lib/sysmon-cal/event.ics" pid=15 comm="python3" requested_mask="wc" denied_mask="wc"
 unrelated kernel line should be ignored
 `
 
 func TestParseApparmorDenialsFiltersByProfile(t *testing.T) {
 	t.Parallel()
 	got := parseApparmorDenials(strings.NewReader(sampleAuditLog), "runc_scan_x")
-	if len(got) != 5 {
-		t.Fatalf("expected 5 records for runc_scan_x, got %d: %+v", len(got), got)
+	if len(got) != 6 {
+		t.Fatalf("expected 6 records for runc_scan_x, got %d: %+v", len(got), got)
 	}
 	for _, r := range got {
 		if r.Profile != "runc_scan_x" {
@@ -37,6 +38,7 @@ func TestBuildAppArmorRulesFromDenials(t *testing.T) {
 	want := []string{
 		"  # unhandled: operation=mount name=/proc",
 		"  /etc/hostname r,",
+		"  /var/lib/sysmon-cal/event.ics w,",
 		"  /var/run/foo w,",
 		"  capability net_admin,",
 	}
