@@ -1,9 +1,9 @@
 
-\chapter{Implementation and Experiments}\label{ch:impl}
+\chapter{Implementation}\label{ch:impl}
 
-This chapter reports the implementation of the design presented in Chapter~\ref{ch:design} and describes the experimental setup used to evaluate it. The purpose of the chapter is to make the artefact concrete: to show how the five-phase pipeline of Section~\ref{sec:design-overview} is realised inside the runtime, how the three mechanism-specific sub-pipelines map to source-tree changes, how the correctness of the scanner is defended through unit and integration tests, and how the end-to-end evaluation is exercised through a dedicated continuous-integration repository built around the runtime.
+This chapter reports how the design presented in Chapter~\ref{ch:design} is realised in the proposed runtime fork. The purpose is to make the artefact concrete: to show how the five-phase pipeline of Section~\ref{sec:design-overview} is implemented, how the three mechanism-specific sub-pipelines map to source-tree changes, and how correctness is defended through unit and integration tests. Experimental setup and measured outcomes are reported in Chapter~\ref{ch:experiments}; their interpretation is discussed in Chapter~\ref{ch:discussion}.
 
-Section~\ref{sec:impl-overview} gives an overview of the implemented prototype and introduces the call-flow diagram that ties the runtime entry points to the scanner components. Section~\ref{sec:impl-tree} documents the changes the proposed runtime makes to the upstream source tree. Section~\ref{sec:impl-caps} describes the new default capability set and the override flags that keep backwards compatibility. Section~\ref{sec:impl-flags} lists the scanner CLI surface and the bundle layout the scanner produces on disk. Section~\ref{sec:impl-subcmd} details the five sub-commands that carry out the scanner's hooks. Section~\ref{sec:impl-cap-trace} covers the cgroup-wide capability trace and its host-side preconditions. Section~\ref{sec:impl-final} describes the finalisation step. Section~\ref{sec:impl-tests} covers the test strategy, including a dedicated end-to-end repository that runs the scanner on a cloud VM. Section~\ref{sec:impl-setup} specifies the experimental setup. Section~\ref{sec:impl-results} reports the current state of the measurements; Section~\ref{sec:impl-discussion} closes with a short discussion.
+Section~\ref{sec:impl-overview} gives an overview of the implemented prototype and introduces the call-flow diagram that ties the runtime entry points to the scanner components. Section~\ref{sec:impl-tree} documents the changes the proposed runtime makes to the upstream source tree. Section~\ref{sec:impl-caps} describes the new default capability set and the override flags that keep backwards compatibility. Section~\ref{sec:impl-flags} lists the scanner CLI surface and the bundle layout the scanner produces on disk. Section~\ref{sec:impl-subcmd} details the five sub-commands that carry out the scanner's hooks. Section~\ref{sec:impl-cap-trace} covers the cgroup-wide capability trace and its host-side preconditions. Section~\ref{sec:impl-final} describes the finalisation step. Section~\ref{sec:impl-tests} covers the in-repository test strategy.
 
 \section{Implementation Overview}\label{sec:impl-overview}
 
@@ -58,8 +58,6 @@ Figure~\ref{fig:callflow} shows the high-level call flow. The control path throu
 \end{figure}
 
 The same figure makes the role of each hook concrete: the AppArmor sub-pipeline runs between \texttt{scan-aa-load} (createRuntime) and \texttt{scan-aa-unload} (poststop), the capability sub-pipeline runs between \texttt{scan-cap-trace-start} (poststart) and \texttt{scan-cap-trace-stop} (poststop, prepended), and the snapshot sub-command runs once after the container starts to capture \texttt{/proc/<init>/status} for diagnostics. The seccomp sub-pipeline is invoked through an upstream prestart hook that the scanner installs; its output is written by the hook itself, without a dedicated sub-command.
-
-End-to-end testing is not run from inside the runtime repository. A dedicated companion repository, \texttt{thesis-ci-repo}, contains the matrix workflow that exercises the scanner against a growing list of bundles on a cloud VM; the repository packages the cloud infrastructure, the host provisioning, the per-bundle contract, and the artefact archive as code. Its contents are documented as an additional achievement in Chapter~\ref{ch:additional}; here, the companion repository plays the role an \emph{end-to-end test suite} plays for a standalone application: it checks that the scanner behaves correctly against real bundles, real tooling, and real kernels rather than only against the mocks the in-repository integration tests use.
 
 \section{Source-Tree Changes}\label{sec:impl-tree}
 
@@ -151,7 +149,7 @@ When \texttt{-{}-security-scan} is set, the bundle gains a single new directory 
   spec.original.json                    # pre-scan config.json, kept for rollback
 \end{verbatim}
 
-The bundle layout is stable across scanner versions and is the contract that the end-to-end tests in the companion repository check against.
+The bundle layout is stable across scanner versions and is the contract checked by the integration smoke pack and by the external runtime-security laboratory described in Chapter~\ref{ch:experiments}.
 
 \section{Self-Exec Hook Sub-Commands}\label{sec:impl-subcmd}
 
@@ -214,11 +212,11 @@ The function is set-difference, not set-union: an empty trace produces an empty 
 
 \section{Tests}\label{sec:impl-tests}
 
-The correctness of the scanner is defended at three levels: unit tests inside the runtime repository, an integration smoke pack inside the runtime repository, and an end-to-end matrix inside the companion CI repository. Table~\ref{tab:tests} summarises the three levels.
+The correctness of the scanner is defended at two levels inside the runtime repository: unit tests and an integration smoke pack. Table~\ref{tab:tests} summarises both. A separate laboratory repository exercises the same scanner against a real kernel, real tooling, and a full web workload; that evaluation is reported in Chapter~\ref{ch:experiments}.
 
 \begin{table}[ht]
 \centering
-\caption{Test suites that exercise the proposed runtime.}
+\caption{In-repository test suites that exercise the proposed runtime.}
 \label{tab:tests}
 \begin{tabular}{p{3.6cm}p{4.0cm}p{7.6cm}}
 \toprule
@@ -226,7 +224,6 @@ The correctness of the scanner is defended at three levels: unit tests inside th
 \midrule
 Unit tests & In-process Go tests & Capability-name normaliser, cgroup-path resolver, AppArmor profile-name sanitiser, finalisation parser, relax-spec mutator, grant-all-caps mutator. \\
 Integration smoke & bats + runtime repo & The CLI flag end-to-end against a busybox bundle; stubs replace \texttt{oci-seccomp-bpf-hook}, \texttt{capable-bpfcc}, and \texttt{bpftool}. \\
-End-to-end matrix & \texttt{thesis-ci-repo} & Real bundles, real tooling, real kernel; runs on a self-hosted runner provisioned from infrastructure-as-code. \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -239,87 +236,4 @@ End-to-end matrix & \texttt{thesis-ci-repo} & Real bundles, real tooling, real k
 sudo make localintegration TESTPATH=/security_scan.bats
 \end{verbatim}
 
-\textbf{End-to-end matrix (companion repository).} The end-to-end tests live in a separate repository, \texttt{thesis-ci-repo}, documented in Chapter~\ref{ch:additional}. The separation is intentional: the matrix is not part of the runtime under test, and mixing the observer with the observed makes it harder to argue that the matrix is fair. The matrix uses the real \texttt{oci-seccomp-bpf-hook}, the real \texttt{capable-bpfcc} from the BCC toolchain~\cite{bcc2025}, and the real \texttt{bpftool} from \texttt{linux-tools}, running on a cloud VM whose image is managed by Ansible and whose lifecycle is managed by Terraform. The list of bundles grows as new workloads are added; the current catalogue includes a smoke-pack \texttt{busybox-default} and an application-layer \texttt{juice-shop} bundle that runs a live HTTP probe during the scan. Each matrix run keeps the entire \texttt{generated/} directory in object storage, partitioned by runtime commit, run identifier, and bundle name, so that any figure reported in this thesis can be traced back to the exact \texttt{config.json} and the exact log that produced it.
-
-The companion repository plays the role of the end-to-end test harness. It triggers on every push to the runtime fork (through a \texttt{repository\_dispatch} event that carries the runtime commit identifier), on a nightly cron, and on demand from a \texttt{workflow\_dispatch} button. The per-bundle \texttt{verify-profiles.sh} script, plus a bundle-defined \texttt{bats} pack, checks the same contract that the in-repository smoke test checks, but against real kernel behaviour rather than against stubs. A regression in the scanner that passes the in-repository smoke pack (because the stubs cannot tell a real \texttt{oci-seccomp-bpf-hook} apart from their own output) is therefore caught by the companion repository on the next push.
-
-\section{Experimental Setup}\label{sec:impl-setup}
-
-The experimental setup instantiates the evaluation methodology of Section~\ref{sec:design-eval}. The matrix workflow runs on a single self-hosted runner provisioned by the companion repository. The runner is a Yandex Cloud VM with four virtual CPUs and eight gigabytes of memory, running Ubuntu~24.04 with a 6.8-series kernel; the exact machine image is defined in Terraform and reprovisioning it produces a byte-identical host configuration.
-
-Every bundle in the matrix is run under each of the five configurations from Section~\ref{sec:design-eval}: upstream \texttt{runc} in its default state, the proposed runtime with the empty-capability default but no scanning, the proposed runtime after a full scan-then-enforce cycle, gVisor, and Kata Containers. The measurement plan calls for ten repetitions after one warm-up iteration per configuration and per bundle, with the median and the interquartile range reported; wall-clock times are taken from \texttt{runc events} and from bundle-defined probe scripts, CPU and memory are taken from the container cgroup (\texttt{cpu.stat}, \texttt{memory.current}), I/O bandwidth is taken from a synthetic \texttt{fio} job or from a bundle-defined probe, and TCP throughput is taken from an \texttt{iperf3} pair. The exact reproducer commands live in each bundle's \texttt{bundle.yaml} contract in the companion repository, so that any future researcher can replay the matrix without access to the original workstation.
-
-\section{Current Results}\label{sec:impl-results}
-
-The comparative evaluation has not been executed at the time of writing; what follows is the schema under which the numbers will be reported, together with placeholders that mark the tables whose contents depend on the pending runs. The approach keeps the schema visible now so that the reader can tell which rows are instrumental and which rows are expected to be filled in.
-
-\begin{table}[ht]
-\centering
-\caption{Planned reporting: steady-state CPU overhead relative to default \texttt{runc} ($N=10$).}
-\label{tab:cpu}
-\begin{tabular}{lrrrr}
-\toprule
-\textbf{Workload} & \textbf{Default \texttt{runc}} & \textbf{Proposed runtime} & \textbf{gVisor} & \textbf{Kata} \\
-\midrule
-nginx       & ---  & --- & --- & --- \\
-redis       & ---  & --- & --- & --- \\
-postgresql  & ---  & --- & --- & --- \\
-juice-shop  & ---  & --- & --- & --- \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-\begin{table}[ht]
-\centering
-\caption{Planned reporting: cold-start latency, ms (median, IQR), $N=10$.}
-\label{tab:startup}
-\begin{tabular}{lrrrr}
-\toprule
-\textbf{Workload} & \textbf{Default \texttt{runc}} & \textbf{Proposed runtime} & \textbf{gVisor} & \textbf{Kata} \\
-\midrule
-busybox     & ---  & --- & --- & --- \\
-nginx       & ---  & --- & --- & --- \\
-redis       & ---  & --- & --- & --- \\
-juice-shop  & ---  & --- & --- & --- \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-\begin{table}[ht]
-\centering
-\caption{Planned reporting: profile quality emitted by the scanner.}
-\label{tab:profquality}
-\begin{tabular}{lrrr}
-\toprule
-\textbf{Workload} & \textbf{Allowed syscalls} & \textbf{Capabilities used} & \textbf{AppArmor entries} \\
-\midrule
-busybox     & --- & --- & --- \\
-nginx       & --- & --- & --- \\
-redis       & --- & --- & --- \\
-postgresql  & --- & --- & --- \\
-juice-shop  & --- & --- & --- \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-\begin{table}[ht]
-\centering
-\caption{Planned reporting: security effectiveness against curated container-escape attempts (blocked / total).}
-\label{tab:security}
-\begin{tabular}{lcccc}
-\toprule
-\textbf{Attempt class} & \textbf{Default \texttt{runc}} & \textbf{Proposed runtime} & \textbf{gVisor} & \textbf{Kata} \\
-\midrule
-\texttt{CVE-2019-5736} family~\cite{cve2019} & --- & --- & --- & --- \\
-Capability-bound escapes         & --- & --- & --- & --- \\
-\texttt{ptrace}/\texttt{kexec}-class syscalls & --- & --- & --- & --- \\
-Filesystem confinement breakouts & --- & --- & --- & --- \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-The list of vulnerable-container workloads that will be run against the security-effectiveness table is being drawn from the application-security training ecosystem (OWASP Juice Shop, a deliberately misconfigured database container, and comparable targets); the exact aggregation method is still being developed, as noted in Section~\ref{sec:design-eval}.
-
-\section{Discussion}\label{sec:impl-discussion}
-
-The implementation delivers the artefacts the design called for: a single CLI flag, three sub-pipelines that produce four complementary artefacts, a self-exec hook mechanism that keeps the bundle free of executable files, and a finalisation step whose semantics is set difference. The five preconditions in Section~\ref{sec:impl-cap-trace} make concrete the trade-off the design chapter stated explicitly --- prefer a clean refusal to a silent degradation --- and are the single most important safety invariant in the implementation. Once the comparative matrix completes, the qualitative claim that the hardened runtime closes the kernel-side perimeter against the syscall-, capability-, and path-based attack classes while staying within single-digit percent of default \texttt{runc} for CPU and memory can be checked quantitatively; the discussion of the trade-offs, the sensitivity of the numbers to workload choice, and the comparison to the sandboxed alternatives is deferred to Chapter~\ref{ch:conclusion}.
+\textbf{Laboratory evaluation (external).} The \texttt{runc-hardened-test} repository runs the scanner with real \texttt{oci-seccomp-bpf-hook}, \texttt{capable-bpfcc}, and \texttt{bpftool} on Ubuntu~24.04, then compares baseline and hardened enforcement against a fixed post-exploitation script. Chapter~\ref{ch:experiments} documents that protocol and its results.

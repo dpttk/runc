@@ -1,109 +1,103 @@
 
-\chapter{Additional Achievement: CI Infrastructure}\label{ch:additional}
+\chapter{Experiments}\label{ch:experiments}
 
-\section{Motivation}
+This chapter reports the experimental evaluation of the proposed runtime. It instantiates the methodology of Section~\ref{sec:design-eval} on two reproducible harnesses: the \texttt{runc-hardened-test} laboratory for profile generation and post-exploitation containment (RQ1 and RQ2), and the \texttt{performance-evaluation} repository for runtime cost comparison against stock \texttt{runc} and gVisor (RQ3). Section~\ref{sec:exp-setup} describes the setup; Section~\ref{sec:exp-results} presents the measured outcomes.
 
-The runtime described in Chapters~\ref{ch:design}--\ref{ch:impl} is half of a usable thesis artefact; the other half is the infrastructure that exercises it. A thesis-grade evaluation needs (i) a deterministic environment so that benchmark numbers are comparable across runs, (ii) a way to re-run the entire scan matrix on every push to the runtime fork, and (iii) an artefact archive that preserves the generated profiles for later inspection and for the figures in this thesis. None of these are in scope for the runtime fork itself, but all three are necessary to make the experiments reproducible.
+\section{Experimental Setup}\label{sec:exp-setup}
 
-The result is a separate repository, \texttt{thesis-ci-repo}, that lives next to the runtime fork and packages the entire evaluation pipeline as code: Terraform for the cloud resources, Ansible for the host configuration, GitHub Actions for the workflow, and a per-bundle directory layout that drives both the scan and the validation step. This chapter documents that repository as the \emph{additional achievement} delivered alongside the runtime.
-
-\section{Repository Overview}
-
-The CI repository contains five top-level directories:
-
-\begin{verbatim}
-.github/workflows/scan-matrix.yml   # the only CI job
-ansible/                            # host provisioning
-terraform/                          # cloud resources
-bundles/                            # one directory per evaluated workload
-scripts/                            # fetch-runc, prepare-bundle, run-scan, ...
-\end{verbatim}
-
-The end-to-end flow is shown in Figure~\ref{fig:ci-flow} (placeholder).
-
-\begin{figure}[ht]
-\centering
-\fbox{\parbox{0.85\linewidth}{\centering\textit{Placeholder for Fig.\ \ref{fig:ci-flow} --- \texttt{runc-fork} push triggers \texttt{publish-runc-binary.yml}, which uploads the binary as a GitHub Actions artefact and dispatches a \texttt{runc-build-available} event to \texttt{thesis-ci-repo}; the scan-matrix workflow then fetches the binary, prepares each bundle, runs \texttt{runc -{}-security-scan}, verifies the output, and uploads the artefacts to Yandex Object Storage.}}}
-\caption{End-to-end CI flow between \texttt{runc-fork} and \texttt{thesis-ci-repo}.}
-\label{fig:ci-flow}
-\end{figure}
-
-\section{Cloud Infrastructure (Terraform)}
-
-The runner host and its support resources are described in Terraform under \texttt{terraform/}. The state is kept in S3-compatible Yandex Object Storage. Inputs are fed via \texttt{terraform.tfvars}; the operator runs \texttt{terraform apply} from a workstation. Provisioned resources include:
-
-\begin{itemize}
-    \item a Yandex Cloud VPC with a subnet for the runner;
-    \item a security group that opens only the egress paths the runner needs (HTTPS to GitHub, S3 to Object Storage);
-    \item a service account with the minimum role set required to write to the artefacts bucket;
-    \item an Object Storage bucket (\texttt{YC\_ARTIFACTS\_BUCKET}) that stores the generated profiles per scan, partitioned by \texttt{scans/<runc\_ref>/<run\_id>/<bundle>/};
-    \item the runner VM (currently 4~vCPU, 8~GiB RAM, Ubuntu~24.04) with a static IP.
-\end{itemize}
-
-Terraform is intentionally not wired into GitHub Actions: cloud lifecycle is rare, manual, and easier to audit when a human operator runs \texttt{terraform plan} and reads the diff before applying.
-
-\section{Host Provisioning (Ansible)}
-
-After Terraform creates the VM, \texttt{scripts/gen-inventory.sh} renders an Ansible inventory from the Terraform outputs, and \texttt{ansible/playbook.yml} converges the host. The playbook is split into three roles:
-
-\begin{itemize}
-    \item \textbf{\texttt{base}} --- baseline OS hardening, time sync, log rotation, AWS CLI v2 (used by \texttt{upload-artifacts.sh});
-    \item \textbf{\texttt{scanner\_host}} --- the BCC toolchain (\texttt{bpfcc-tools}), \texttt{linux-tools-common} (for \texttt{bpftool}), \texttt{oci-seccomp-bpf-hook}, \texttt{apparmor-utils}, and the kernel headers required by BCC at first run;
-    \item \textbf{\texttt{gha\_runner}} --- registers the GitHub Actions self-hosted runner against the CI repo, installed as a systemd service.
-\end{itemize}
-
-The runner registration token is supplied via Ansible Vault; the rest of the inventory is plain text and can be regenerated from Terraform on demand.
-
-\section{Bundle Layout}
-
-Every workload that the matrix evaluates lives under \texttt{bundles/<name>/} as a self-contained directory. The contract is a single \texttt{bundle.yaml} file that drives \texttt{prepare-bundle.sh}, \texttt{run-scan.sh}, and \texttt{verify-profiles.sh}. The currently supported rootfs recipes are \texttt{busybox-tar}, \texttt{docker-export}, \texttt{tar-url}, and \texttt{script}. A bundle that needs a live network probe (e.g.\ \texttt{juice-shop}) declares \texttt{scan.probe\_script} and \texttt{config.template: ../templates/hostnet.config.json}; \texttt{run-scan.sh} starts \texttt{runc} in the background, runs the probe, and then \texttt{SIGTERM}s the container so the scanner can finalise.
-
-Adding a new bundle is a three-step operation: (i) create the directory and write \texttt{bundle.yaml}; (ii) drop bats files under \texttt{bundles/<name>/tests/}; (iii) commit. The \texttt{discover} job in the workflow picks the new directory up automatically.
-
-\section{The \texttt{scan-matrix.yml} Workflow}
-
-The workflow is the only CI job in the repository. It triggers on:
-
-\begin{itemize}
-    \item \texttt{repository\_dispatch: types: [runc-build-available]} fired by the runtime repository after a successful build;
-    \item a nightly cron;
-    \item manual \texttt{workflow\_dispatch}.
-\end{itemize}
-
-The workflow has three jobs:
-
+\textbf{Runtime-security laboratory (\texttt{runc-hardened-test}).} The primary security experiment runs on a dedicated Ubuntu~24.04 VM with cgroup~v2 and AppArmor enabled. The laboratory builds two runtime binaries---upstream \texttt{runc-stock} and the proposed \texttt{runc-hardened}---and packages a single OCI bundle with an intentionally vulnerable Flask workload (system monitor plus calendar). Command injection in \texttt{/diag/ping} and \texttt{/diag/dns} is retained on purpose: the experiment does not measure whether remote code execution is possible, but what an attacker can do \emph{after} reaching shell execution inside the container. The protocol is:
 \begin{enumerate}
-    \item \textbf{\texttt{discover}} --- walks \texttt{bundles/} and emits a JSON matrix of bundle names. The matrix is consumed by the next job's \texttt{strategy.matrix}.
-    \item \textbf{\texttt{scan}} (matrix per bundle) --- runs on the self-hosted runner and executes, for each bundle:
-        \begin{itemize}
-            \item \texttt{fetch-runc.sh} --- downloads the \texttt{runc} binary from the runtime repo (\texttt{actions: read} via \texttt{RUNC\_ARTIFACTS\_TOKEN});
-            \item \texttt{prepare-bundle.sh} --- materialises the rootfs and the \texttt{config.json} according to \texttt{bundle.yaml};
-            \item \texttt{run-scan.sh} --- invokes \texttt{runc run -{}-security-scan} (and the probe script if declared);
-            \item \texttt{verify-profiles.sh} plus the bundle-defined bats pack --- asserts the generated profile shape and content against the contract;
-            \item \texttt{upload-artifacts.sh} --- pushes \texttt{generated/} to \texttt{s3://YC\_ARTIFACTS\_BUCKET/scans/<sha>/<run\_id>/<bundle>/}.
-        \end{itemize}
-    \item \textbf{\texttt{summary}} --- aggregates the per-bundle results into a GitHub Actions Job Summary (Markdown), so the matrix is readable from the run page without downloading artefacts.
+    \item run the workload under stock \texttt{runc} without generated profiles (baseline);
+    \item repeat a fixed set of post-exploitation payloads through the injection endpoint;
+    \item run \texttt{runc-hardened --security-scan} while exercising only legitimate HTTP paths (UI, logs, ping, DNS, calendar upload);
+    \item apply the generated AppArmor, seccomp, and capability artefacts;
+    \item replay the same payloads under hardened enforcement.
 \end{enumerate}
+Reproducer scripts live in the laboratory repository; the host requires root for \texttt{runc}, AppArmor profile loading, and BPF tracing.
 
-The required GitHub configuration on the CI repo side is small: \texttt{RUNC\_ARTIFACTS\_TOKEN} (PAT with \texttt{actions: read} on the runtime repo), \texttt{YC\_STORAGE\_ACCESS\_KEY} / \texttt{YC\_STORAGE\_SECRET\_KEY} (S3-compatible credentials for the bucket), and the \texttt{YC\_ARTIFACTS\_BUCKET} / \texttt{RUNC\_FORK\_REPO} variables.
+\textbf{Performance harness (\texttt{performance-evaluation}).} A separate benchmark host compares stock \texttt{runc}, the hardened binary via containerd, gVisor (\texttt{runsc}), and---optionally---an OCI bundle that already carries generated profiles from the security laboratory (\texttt{prepare-hardened-bundle.sh}). Fallback benchmarks report startup latency, parallel scalability (5/10/50 containers), and sysbench CPU/memory inside containers. Each configuration is measured ten times after one warm-up iteration; the median is reported. Table~\ref{tab:perf-startup} is filled from \texttt{results/*/summary.json} once the benchmark archive is complete.
 
-\section{Why a Separate Repository}
+At the time of writing, the security laboratory fully exercises configurations~(a) and~(c) from Section~\ref{sec:design-eval} (default upstream \texttt{runc} vs.\ scan-then-enforce on the proposed runtime). Configurations~(d) and~(e) (gVisor and Kata) are addressed by the performance harness for RQ3; Kata numbers remain optional future work on the same host.
 
-A single-repository design was considered and rejected for two reasons. First, the scan matrix is not part of the runtime under test --- it observes the runtime, and conflating the observer with the observed makes it harder to argue that the matrix is fair. Second, the cloud resources, the Ansible playbook, and the bundle catalogue have a lifecycle that is independent of the runtime: a new bundle should not require a runtime release, and a Terraform refactor should not show up in the runtime's commit history. Splitting the two also keeps the runtime fork's CI surface minimal --- it builds the binary, publishes it as an artefact, and dispatches a single event.
+\section{Experimental Results}\label{sec:exp-results}
 
-\section{Reproducibility Contract}
+\subsection{Scope and threat model}
 
-Concretely, the artefact bucket together with the CI repository commit hash is enough to reproduce any number reported in Chapter~\ref{ch:impl}. For each \texttt{(runc\_ref, run\_id, bundle)} triple, the bucket contains:
+The runtime-security laboratory answers RQ1 and RQ2 on a single representative workload. The attacker model is application-layer command injection followed by arbitrary shell commands in the container context. Kernel-side escape primitives (CVE-specific runtime bugs, mounted \texttt{docker.sock}, privileged containers) are out of scope, consistent with Section~\ref{sec:design-threat}.
+
+\subsection{Profile generation (RQ1)}
+
+A single \texttt{runc run --security-scan} pass, followed by scripted legitimate traffic, produced the expected artefacts under \texttt{oci-bundle/generated/}: \texttt{seccomp.json} with \texttt{defaultAction=SCMP\_ACT\_ERRNO}, an AppArmor profile learned in complain mode, and \texttt{capable-bpfcc.log} from the cgroup-wide BPF trace. Finalisation embedded the seccomp allow-list and narrowed \texttt{process.capabilities} in \texttt{config.json} without widening privileges relative to the trace.
+
+Three profile-quality findings emerged during the run:
 
 \begin{itemize}
-    \item the \texttt{generated/} directory verbatim (seccomp, AppArmor, capabilities trace, snapshots, logs);
-    \item the \texttt{config.json} effective during the scan;
-    \item the bats output and the workflow Job Summary;
-    \item the runner OS, kernel, and BCC versions captured at the start of the run.
+    \item \textbf{Seccomp.} The allow-list covered syscalls exercised by the Flask process, subprocess invocations (\texttt{ping}, \texttt{nslookup}), and file I/O on application paths.
+    \item \textbf{AppArmor.} Initial runs missed writable paths such as \texttt{/var/lib/sysmon-cal} because the audit collector matched only \texttt{apparmor=DENIED}, while complain mode logs would-be denials as \texttt{apparmor=ALLOWED}. The collector was updated to accept both forms; unit tests now cover calendar upload writes.
+    \item \textbf{Capabilities.} The \texttt{capable-bpfcc} trace did not record \texttt{CAP\_NET\_RAW} required by \texttt{/usr/bin/ping} when the capability is carried as a \emph{file capability} (\texttt{security.capability} xattr) rather than through \texttt{cap\_capable} events. Until the runtime merges file capabilities from executed binaries, the laboratory documents an explicit post-scan adjustment (\texttt{REQUIRED\_CAPS=CAP\_NET\_RAW}) in \texttt{apply.sh}.
 \end{itemize}
 
-\emph{Placeholder.} A short table linking the figures and tables in Chapter~\ref{ch:impl} to the corresponding artefact paths is added once the matrix produces the final numbers.
+Table~\ref{tab:profquality-lab} summarises the artefact families for the laboratory workload.
 
-\section{What This Achievement Adds to the Thesis}
+\begin{table}[ht]
+\centering
+\caption{Profile artefacts produced by \texttt{--security-scan} on the runtime-security lab workload.}
+\label{tab:profquality-lab}
+\begin{tabular}{ll}
+\toprule
+\textbf{Artefact} & \textbf{Role} \\
+\midrule
+\texttt{generated/seccomp.json} & Deny-by-default syscall allow-list (\texttt{oci-seccomp-bpf-hook}) \\
+\texttt{generated/apparmor.profile} & MAC rules from complain-mode audit \\
+\texttt{generated/capable-bpfcc.log} & Observed \texttt{cap\_capable} events (cgroup-wide) \\
+\texttt{config.json} (post-finalise) & Narrowed \texttt{process.capabilities}, embedded seccomp \\
+\bottomrule
+\end{tabular}
+\end{table}
 
-The CI infrastructure is presented as additional achievement because it is independent in scope from the runtime and stands on its own as engineering work. It also strengthens the central claim of the thesis: the runtime is usable by a single developer with no infrastructure (the basic case), and the same runtime can be wrapped in a fully reproducible IaC-defined matrix when an organisation does have infrastructure (the basic case scaled up). Both endpoints of that spectrum are demonstrated by the artefacts shipped alongside this writing.
+\subsection{Containment effectiveness (RQ2)}
+
+After scan-then-enforce, the same injection payloads used in the baseline run were replayed against the hardened configuration. The vulnerable HTTP endpoints remained exploitable by design; the difference appears in post-exploitation actions. Table~\ref{tab:security-lab} records the qualitative outcome observed on the laboratory VM.
+
+\begin{table}[ht]
+\centering
+\caption{Post-exploitation containment: stock \texttt{runc} (baseline) vs.\ proposed runtime after scan-then-enforce.}
+\label{tab:security-lab}
+\begin{tabular}{p{2.6cm}p{3.4cm}cc}
+\toprule
+\textbf{Class} & \textbf{Example payload} & \textbf{Baseline} & \textbf{Hardened} \\
+\midrule
+Reconnaissance & \texttt{id; hostname; uname -a} & Succeeds & Partially limited \\
+Sensitive read & \texttt{cat /etc/shadow} & Succeeds & Blocked (seccomp / AppArmor) \\
+Reverse shell & \texttt{bash -i >\& /dev/tcp/\ldots} & Succeeds & Blocked \\
+Mount probe & \texttt{mount -t proc proc /mnt} & Succeeds & Blocked \\
+Persistence & \texttt{chmod u+s /bin/bash} & Succeeds & Blocked \\
+Legitimate ping & \texttt{/diag/ping?host=127.0.0.1} & OK & OK (requires \texttt{CAP\_NET\_RAW} in apply) \\
+Calendar upload & \texttt{POST /calendar/upload} & OK & OK (writable path ownership in apply) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Baseline execution left an effective in-container root context after injection. Hardened execution blocked reads of sensitive files, reverse-shell setup, and mount-based probing while preserving intended application behaviour once the documented capability and writable-path adjustments were applied. Evidence includes paired HTTP responses, fragments of \texttt{generated/seccomp.json} and \texttt{apparmor.profile}, AppArmor audit lines from \texttt{dmesg} or \texttt{ausearch}, and the capability set printed by \texttt{apply.sh}.
+
+\subsection{Performance (RQ3)}
+
+Steady-state and startup measurements against stock \texttt{runc}, the hardened binary, gVisor, and---optionally---a bundle with enforcement profiles applied are collected with the \texttt{performance-evaluation} harness. Profile generation is a \emph{scan-time} cost (one BPF recording pass); operators pay \emph{enforcement-time} overhead on every subsequent start.
+
+Table~\ref{tab:perf-startup} will be filled from \texttt{results/*/summary.json} after the benchmark host run. Until then, the columns are placeholders. Qualitatively, prior work~\cite{wang2022,volpert2024} suggests the hardened traditional runtime should remain closer to stock \texttt{runc} than gVisor on syscall-heavy microbenchmarks.
+
+\begin{table}[ht]
+\centering
+\caption{Container performance (median; fallback benchmark, $N=10$).}
+\label{tab:perf-startup}
+\begin{tabular}{lrrrr}
+\toprule
+\textbf{Metric} & \textbf{Stock \texttt{runc}} & \textbf{Hardened binary} & \textbf{Hardened + enforcement} & \textbf{gVisor} \\
+\midrule
+Startup avg (\texttt{/bin/true}), ms & --- & --- & --- & --- \\
+Scale-50 parallel, ms                 & --- & --- & --- & --- \\
+sysbench CPU (events/s)               & --- & --- & --- & --- \\
+sysbench memory (MiB/s)               & --- & --- & --- & --- \\
+\bottomrule
+\end{tabular}
+\end{table}

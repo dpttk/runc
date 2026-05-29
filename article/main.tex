@@ -206,7 +206,7 @@ This thesis presents a security-first fork of \texttt{runc} that (i)~ships with 
 
 The runtime is evaluated against four alternative families of solutions: sandboxed runtimes (gVisor), manual policy authoring, cluster-side recorders such as the Kubernetes Security Profiles Operator and Inspektor Gadget, and Tetragon-style observability stacks. The central claim is that, while a properly staffed CI/DevSecOps pipeline can match or exceed the security level produced by this work, the runtime-side scanner reaches a comparable result with a single CLI flag and no cluster prerequisites, putting automatic confinement within reach of teams that cannot afford a dedicated security engineer.
 
-A companion infrastructure repository (Terraform on Yandex Cloud, Ansible provisioning, a self-hosted GitHub Actions runner, and a per-bundle scan matrix) packages the full evaluation pipeline as additional achievement and is described in a dedicated chapter.
+Evaluation is reproduced through the \texttt{runc-hardened-test} security laboratory and the \texttt{performance-evaluation} benchmark harness on Ubuntu~24.04 with cgroup~v2.
 
 \keywords{OCI runtime \and runc \and seccomp \and AppArmor \and Linux capabilities \and eBPF.}
 \end{abstract}
@@ -217,6 +217,7 @@ A companion infrastructure repository (Terraform on Yandex Cloud, Ansible provis
 \input{../thesis/overleaf/chapters/chapter4}
 \input{../thesis/overleaf/chapters/chapter5}
 \input{../thesis/overleaf/chapters/chapter6}
+\input{../thesis/overleaf/chapters/chapter7}
 
 \appendix
 \input{../thesis/overleaf/chapters/appex}

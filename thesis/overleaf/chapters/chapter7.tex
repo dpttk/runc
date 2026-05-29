@@ -1,0 +1,46 @@
+
+\chapter{Conclusion and Future Work}\label{ch:conclusion}
+
+\section{Summary}
+
+This thesis presented a security-first fork of the OCI reference runtime \texttt{runc}. The fork makes three concrete changes to the runtime layer: it ships with an empty default capability set (with two opt-in flags that restore the upstream and the historical Docker defaults), it adds a single \texttt{-{}-security-scan} flag that records the workload through eBPF and emits seccomp, AppArmor, and capability profiles, and it narrows the on-disk \texttt{config.json} to the observed capability set without ever widening it.
+
+Two design decisions distinguish the implementation from prior automated-profiling work. First, every hook is a hidden sub-command of the runtime binary itself, so the OCI bundle never gains an executable artefact at scan time. Second, capability tracing uses \texttt{capable-bpfcc -{}-cgroupmap} with a \texttt{bpftool}-pinned cgroup-v2 map, so child processes spawned after the trace started are observed --- the failure mode that simpler \texttt{-p \$pid} pipelines silently exhibit.
+
+The proposed runtime was situated in a four-way competitive landscape (sandboxed runtimes, manual authoring, cluster-side recorders such as the Kubernetes Security Profiles Operator and Inspektor Gadget, and the runtime-side scanner introduced here). The argument is not that the proposed runtime dominates: a sufficiently staffed DevSecOps pipeline running SPO or Inspektor Gadget can in principle exceed the runtime's output. The argument is that the runtime substantially lowers the operational floor: a single developer with one CLI flag obtains a profile that, until now, required a Kubernetes cluster, a recorder DaemonSet, and a security engineer to produce.
+
+\section{Answers to the Research Questions}
+
+\textbf{RQ1 --- Can a runtime, without infrastructure changes, generate profiles whose security level approaches what a CI-driven recorder produces?} The answer is positive on exercised paths: the runtime-security laboratory produced deny-by-default seccomp, complain-mode AppArmor, and cgroup-wide capability traces from a single \texttt{--security-scan} run (Chapter~\ref{ch:experiments}, Table~\ref{tab:profquality-lab}). Two gaps remain visible rather than hidden: file capabilities on executed binaries (e.g.\ \texttt{CAP\_NET\_RAW} on \texttt{ping}) are not yet merged from \texttt{security.capability} xattrs, and AppArmor path learning required parsing both \texttt{ALLOWED} and \texttt{DENIED} audit records in complain mode.
+
+\textbf{RQ2 --- How should the runtime expose this capability so it remains a one-flag operation?} Three constraints turned out to be load-bearing: (i) host-supplied confinement must be relaxed in memory, not on disk; (ii) capability tracing must be cgroup-wide, otherwise child processes break the next run; and (iii) finalisation must be set-difference and never set-union, otherwise repeated scans drift toward the historical Docker default set. The implementation honours all three; Table~\ref{tab:security-lab} shows that enforcement blocks post-exploitation actions that succeed under stock \texttt{runc} on the same injected workload.
+
+\textbf{RQ3 --- What is the trade-off between the hardened runtime, default \texttt{runc}, and sandboxed alternatives?} On security effectiveness, scan-then-enforce materially reduces post-exploitation capability while preserving legitimate application behaviour after documented profile adjustments. On performance, the \texttt{performance-evaluation} harness is in place to compare stock \texttt{runc}, the hardened binary, enforcement on a scanned bundle, and gVisor; numeric figures belong in Table~\ref{tab:perf-startup} once the benchmark archive is complete. Qualitatively, prior work still suggests the hardened traditional runtime should sit between default \texttt{runc} and gVisor on syscall-bound cost.
+
+\section{Limitations}
+
+\textbf{Dynamic-trace coverage.} Like every behavioural profiler --- including SPO and Inspektor Gadget --- the scanner only records what executes during the scan window. Code paths gated by uncommon errors, scheduled jobs, signal handlers, log-rotation events, certificate refresh, database migrations, or fallback branches will not be recorded unless explicitly exercised. The recommended mitigation is to drive the scan with the same end-to-end test suite that gates the application's releases.
+
+\textbf{Root workloads.} \texttt{cap\_capable} is not invoked by the kernel for many checks performed by \texttt{root}, so a workload that runs as \texttt{uid 0} systematically under-reports the capability set. The runtime warns but does not rewrite the user. Workloads that genuinely need root for legitimate reasons can either re-run the scan as a non-zero UID or accept the under-reporting as a known limitation.
+
+\textbf{Cgroup-v2 only.} The cgroup-wide capability tracer requires the unified cgroup-v2 hierarchy and a recent \texttt{capable-bpfcc} that accepts \texttt{-{}-cgroupmap}, plus \texttt{bpftool}. Hosts on cgroup-v1 or hybrid hierarchies are explicitly refused; a silent fallback to \texttt{-p \$pid} would have hidden the regression in child-process coverage and was therefore rejected.
+
+\textbf{Supply-chain malicious behaviour.} An image whose behaviour is intentionally crafted to look benign during the scan and only attempts privileged operations later is out of scope. This is a generic limitation of trace-based profiling and is shared with every cluster-side recorder.
+
+\textbf{AppArmor refinement.} The runtime emits a complain-mode profile and the kernel's audit log; turning that log into a refined deny-list can still be assisted by \texttt{aa-logprof} on the host, which is interactive and is not invoked automatically by the runtime.
+
+\section{Future Work}
+
+\textbf{File-capability merge.} Reading \texttt{security.capability} xattrs on executed binaries during scan would close the \texttt{ping}/\texttt{CAP\_NET\_RAW} gap without laboratory workarounds.
+
+\textbf{Static augmentation of the trace.} Combining the dynamic trace with static analysis of the image (entry points, ELF symbol tables, embedded scripts) would catch some of the missed code paths. Canella et al.~\cite{canella2021} already demonstrated this for seccomp; extending it to capabilities and AppArmor is a natural follow-up.
+
+\textbf{Differential profiles across releases.} Re-running the scan on every image release and reporting the diff (new syscalls, new capabilities) would catch regressions before they ship.
+
+\textbf{SPO compatibility.} Emitting the profiles in the SPO Custom Resource format would make them directly consumable by clusters that already run SPO.
+
+\textbf{Comparative re-evaluation.} A head-to-head comparison of profiles produced by SPO, Inspektor Gadget, and the runtime-side scanner for the same workload would quantify how close RQ1 comes to cluster-side recorders in practice.
+
+\section{Closing Remarks}
+
+The container-security literature is dominated by two endpoints: replace the runtime with a stronger sandbox, or wrap the runtime in a cluster-side platform. Both are sound; both also assume that someone is paying for the overhead --- in CPU for the sandbox, in engineer-hours for the platform. This thesis argues that the runtime layer itself is a viable third place to put confinement, and that doing so brings developer-grade security automation within reach of teams that cannot afford either of the existing options.

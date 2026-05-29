@@ -53,7 +53,7 @@ The runtime is compared against four configurations:
     \item \textbf{Kata Containers:} Microvm-based isolation.
 \end{itemize}
 
-Workloads include web servers (\texttt{nginx}), databases (\texttt{redis}, \texttt{postgresql}), language runtimes, and a microservice stack (\emph{juice-shop}). Reported metrics cover startup latency, CPU and memory overhead, I/O bandwidth, and security effectiveness against a curated list of container-escape vectors~\cite{cve2019,wong2023}. Detailed numbers are reported in Chapter~\ref{ch:impl} and discussed in Chapter~\ref{ch:conclusion}; placeholders mark the tables that depend on benchmark runs that are still pending at the time of writing.
+The primary workload is an intentionally vulnerable Flask application in the \texttt{runc-hardened-test} laboratory, used to measure post-exploitation containment after command injection. Reported metrics cover profile generation quality, containment effectiveness, startup latency, and CPU and memory overhead. Results are reported in Chapter~\ref{ch:experiments} and discussed in Chapter~\ref{ch:discussion}.
 
 \section{Expected Contribution}
 
@@ -61,9 +61,9 @@ Workloads include web servers (\texttt{nginx}), databases (\texttt{redis}, \text
     \item The first published direct comparison between an opinionated, automatically hardened \texttt{runc} and the dominant sandboxed runtimes.
     \item A practical, developer-grade runtime that produces seccomp, AppArmor, and capability profiles from a single CLI flag, with no cluster, recorder, or operator prerequisites.
     \item Evidence-based guidance for organisations choosing between runtime-side automation, cluster-side recorders, and full sandboxing.
-    \item A turn-key infrastructure repository (Terraform + Ansible + GitHub Actions self-hosted runner on Yandex Cloud) that runs the scanner against a matrix of bundles and persists the resulting profiles in object storage. This is presented separately as the \emph{additional achievement} in Chapter~\ref{ch:additional}.
+    \item Reproducible evaluation harnesses (\texttt{runc-hardened-test} for security, \texttt{performance-evaluation} for benchmarks) that document how the claims in this thesis can be replayed on a stock Linux host.
 \end{enumerate}
 
 \section{Thesis Organization}
 
-Chapter~\ref{ch:litreview} reviews the relevant literature, the cluster-side ecosystem (SPO, Inspektor Gadget, Tetragon), and the competitive landscape from manual authoring to full sandboxing. Chapter~\ref{ch:design} describes the design goals, the threat model, and the scanner architecture. Chapter~\ref{ch:impl} covers the implementation and the experimental setup. Chapter~\ref{ch:additional} documents the CI infrastructure that ships alongside the runtime. Chapter~\ref{ch:conclusion} concludes and outlines future work.
+Chapter~\ref{ch:litreview} reviews the relevant literature and the competitive landscape from manual authoring to full sandboxing. Chapter~\ref{ch:design} describes the design goals, the threat model, and the scanner architecture. Chapter~\ref{ch:impl} covers the implementation. Chapter~\ref{ch:experiments} reports the experimental setup and results. Chapter~\ref{ch:discussion} interprets those results and states threats to validity. Chapter~\ref{ch:conclusion} concludes and outlines future work.
