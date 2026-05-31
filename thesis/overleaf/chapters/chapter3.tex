@@ -1,11 +1,7 @@
 
 \chapter{Design}\label{ch:design}
 
-This chapter describes the design of the proposed runtime extension and the methodology used to arrive at it. The main question the chapter answers is how the self-protecting container runtime from Chapter~\ref{ch:litreview} was turned into a concrete engineering artefact, and why the chosen shape --- a normal runtime with an optional scanning mode --- fits the goals of the thesis.
-
-The chapter follows the logic of a system-design study. The literature review showed that container isolation on Linux is available only as a set of independent kernel mechanisms (seccomp, capabilities, mandatory access control) and that meaningful policies are either written by hand, recorded by a cluster-side tool, or skipped in favour of a sandboxed runtime~\cite{lopes2020,wang2022,spo2025,inspektorgadget2025}. Each option has a real cost: hand-written policies are fragile, cluster recorders need a Kubernetes cluster, and sandboxes trade performance for isolation. The proposed design is built around a single idea --- produce the same kind of profile a CI-side recorder produces, but entirely from the runtime --- and around the observation that such a runtime must first \emph{learn} the workload before it can \emph{protect} it.
-
-Section~\ref{sec:design-rationale} explains the design rationale and how the idea of a self-protecting runtime led to the two-mode design. Section~\ref{sec:design-goals} lists the functional and non-functional requirements that the scanning mode must satisfy. Section~\ref{sec:design-threat} gives the threat model and the attack classes that are out of scope. Section~\ref{sec:design-overview} shows the architecture of the scanning pipeline. Sections~\ref{sec:design-caps}, \ref{sec:design-seccomp}, and~\ref{sec:design-aa} describe the three mechanism-specific sub-pipelines. Section~\ref{sec:design-selfexec} explains why the hooks are sub-commands of the runtime binary instead of scripts written into the bundle. Section~\ref{sec:design-eval} describes the evaluation methodology. Section~\ref{sec:design-summary} summarises the chapter.
+This chapter describes the design of the proposed runtime extension and the methodology used to arrive at it. The literature review showed that container isolation on Linux is available only as a set of independent kernel mechanisms (seccomp, capabilities, mandatory access control) and that meaningful policies are either written by hand, recorded by a cluster-side tool, or skipped in favour of a sandboxed runtime~\cite{lopes2020,wang2022,spo2025,inspektorgadget2025}. The proposed design is built around a single idea --- produce the same kind of profile a CI-side recorder produces, but entirely from the runtime --- and around the observation that such a runtime must first \emph{learn} the workload before it can \emph{protect} it.
 
 \section{Design Rationale}\label{sec:design-rationale}
 
@@ -25,7 +21,7 @@ The design is driven by five requirements, in priority order. Each requirement a
 
 \textbf{R1. Single-flag user experience.} A developer must be able to add a single flag to a normal \texttt{runc run} and obtain a usable set of profiles without further configuration. The scanner must find the external tools it depends on (the BCC \texttt{capable} tracer, \texttt{bpftool}, the OCI seccomp BPF hook) by searching the host \texttt{PATH} and fall back to explicit overrides only when this search fails. The flag itself must be visible through \texttt{--help} and must not require environment variables, configuration files, or a prior \texttt{runc spec} edit.
 
-\textbf{R2. Three profiles from one run.} The scanner must produce, in a single invocation, three artefacts: (i)~a narrowed list of Linux capabilities, (ii)~an AppArmor profile learned in complain mode, and (iii)~a seccomp allow-list. The three artefacts come from independent sub-pipelines but share the same relaxation-and-recording skeleton, so that adding a new mechanism in the future requires only a new sub-pipeline, not a new scanner. SELinux is out of scope: the scanner may clear an existing \texttt{process.selinuxLabel} in memory during relaxation so that it does not mask the trace, but it does not generate a SELinux policy.
+\textbf{R2. Three profiles from one run.} The scanner must produce, in a single invocation, three artefacts: (i)~a narrowed list of Linux capabilities, (ii)~an AppArmor profile learned in complain mode, and (iii)~a seccomp allow-list. The three artefacts come from independent sub-pipelines but share the same relaxation-and-recording skeleton, so that adding a new mechanism in the future requires only a new sub-pipeline, not a new scanner. Label-based MAC beyond AppArmor is out of scope for generation in this work.
 
 \textbf{R3. Full \texttt{runc} compatibility.} The scanner must not change the behaviour of a bundle that does not opt into it. Bundles without the scanning flag must run exactly as they do under upstream \texttt{runc}. In the scanning mode, the OCI bundle on disk must not gain any executable file as a side effect of the scan; the hooks the runtime needs must live inside the runtime binary itself. This preserves the portability contract of the OCI bundle.
 
@@ -57,6 +53,59 @@ The threat model does \emph{not} cover the following classes of attacks, and the
 
 Stated positively, the scanner's main goal is to make a successful \emph{Docker-escape} --- that is, any action whose effect is visible outside the container's intended boundary --- measurably harder to perform, and to make any attempt that relies on an unused syscall or an unused capability fail at the kernel boundary instead of at the application boundary. The classes listed as out of scope remain the responsibility of the application's own security controls; the scanner's contribution is to keep the kernel-side perimeter around the workload small.
 
+\section{Confinement Postures and the Mechanism Stack}\label{sec:design-security-levels}
+
+Every container action---opening a file, binding a port, spawning a shell---eventually becomes a syscall at the kernel boundary~\cite{jajoo2025syscalls}. Figure~\ref{fig:security-levels} shows that path and where the three mechanisms this thesis generates intercept it. Namespaces and discretionary access control are always present for a normal OCI bundle; capabilities, seccomp, and AppArmor are optional layers that can be tightened independently. The matrix below the path compares adoption postures: empirical columns are stock \texttt{runc} vs.\ scan-then-enforce in the laboratory; analytical columns summarise manual tuning, cluster recorders, and sandboxed runtimes from the literature.
+
+\begin{figure}[H]
+\centering
+\resizebox{\textwidth}{!}{%
+\begin{tikzpicture}[
+    box/.style={rectangle, draw, rounded corners=2pt, minimum height=0.65cm, align=center, font=\scriptsize},
+    hook/.style={rectangle, draw, dashed, rounded corners=2pt, minimum height=0.65cm, align=center, font=\scriptsize, fill=yellow!15},
+    arr/.style={-Stealth, thick}
+]
+    \node[box, minimum width=1.5cm] (app) {Application};
+    \node[box, right=0.35cm of app, minimum width=1.1cm] (libc) {libc};
+    \node[box, right=0.35cm of libc, minimum width=1.3cm] (sc) {syscall};
+    \node[hook, right=0.35cm of sc, minimum width=1.45cm] (cap) {Capabilities};
+    \node[hook, right=0.25cm of cap, minimum width=1.35cm] (sec) {Seccomp BPF};
+    \node[hook, right=0.25cm of sec, minimum width=1.35cm] (aa) {AppArmor};
+    \node[box, right=0.35cm of aa, minimum width=1.1cm] (kern) {Kernel};
+    \node[box, right=0.35cm of kern, minimum width=1.2cm] (host) {Host FS / net};
+
+    \draw[arr] (app) -- (libc);
+    \draw[arr] (libc) -- (sc);
+    \draw[arr] (sc) -- (cap);
+    \draw[arr] (cap) -- (sec);
+    \draw[arr] (sec) -- (aa);
+    \draw[arr] (aa) -- (kern);
+    \draw[arr] (kern) -- (host);
+
+    \node[font=\footnotesize, align=center, below=0.55cm of sec] {Scanner records\\\texttt{cap\_capable} + syscalls + paths};
+\end{tikzpicture}%
+}
+
+\vspace{0.4em}
+{\footnotesize
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{@{}lcccccc@{}}
+\toprule
+\textbf{Mechanism} & \textbf{Def.\ \texttt{runc}} & \textbf{Scan} & \textbf{Enforce} & \textbf{Manual} & \textbf{Recorder} & \textbf{Sandbox} \\
+\midrule
+Capabilities & Docker default & trace (wide) & narrowed set & expert-tuned & cluster policy & separate kernel (lit.) \\
+Seccomp & Docker default & trace (wide) & allow-list & expert-tuned & cluster policy & filtered/shim (lit.) \\
+AppArmor & often none & complain & enforce & expert-tuned & cluster policy & N/A or host LSM (lit.) \\
+Post-exploit shell & often possible & same & blocked (\texttt{fork}/\texttt{exec}) & depends & depends & strong isolation (lit.) \\
+\midrule
+\multicolumn{7}{@{}l@{}}{\emph{Empirical in this thesis:} default vs.\ enforce columns. \emph{Analytical:} manual, recorder, sandbox (literature).} \\
+\bottomrule
+\end{tabular}%
+}
+\caption{Syscall path from application to host (after Jajoo~\cite{jajoo2025syscalls}) and qualitative mechanism use per confinement posture. Hardened enforcement blocks reconnaissance shells because the generated seccomp profile omits process-creation syscalls the workload did not exercise during the scan.}
+\label{fig:security-levels}
+\end{figure}
+
 \section{System Overview}\label{sec:design-overview}
 
 The scanning pipeline has five phases. Figure~\ref{fig:arch} gives the high-level picture; Figure~\ref{fig:flow} shows the same pipeline from the data-flow side, with the three external tracing tools and the artefacts they produce.
@@ -84,7 +133,7 @@ The scanning pipeline has five phases. Figure~\ref{fig:arch} gives the high-leve
 \label{fig:arch}
 \end{figure}
 
-\textbf{Phase 1. Spec relaxation (in memory).} The runtime loads the bundle's \texttt{config.json} and rewrites the in-memory spec: the seccomp section is cleared, the SELinux label is cleared, the \texttt{NoNewPrivileges} flag is set to \texttt{false}, every kernel-known capability is granted in all five capability sets (bounding, effective, permitted, inheritable, ambient), and the AppArmor profile is replaced by an auto-generated complain-mode profile. The on-disk \texttt{config.json} is not touched at this stage; the relaxation lives only in memory and disappears when the process exits. The goal is to make the trace complete: any confinement that stays active during the scan silently hides syscalls, capabilities, and paths that the workload would legitimately use, and a profile built from such a trace would deny those uses on the next run and break the workload.
+\textbf{Phase 1. Spec relaxation (in memory).} The runtime loads the bundle's \texttt{config.json} and rewrites the in-memory spec: the seccomp section is cleared, the \texttt{NoNewPrivileges} flag is set to \texttt{false}, every kernel-known capability is granted in all five capability sets (bounding, effective, permitted, inheritable, ambient), and the AppArmor profile is replaced by an auto-generated complain-mode profile. The on-disk \texttt{config.json} is not touched at this stage; the relaxation lives only in memory and disappears when the process exits. The goal is to make the trace complete: any confinement that stays active during the scan silently hides syscalls, capabilities, and paths that the workload would legitimately use, and a profile built from such a trace would deny those uses on the next run and break the workload.
 
 \textbf{Phase 2. Hook installation.} The runtime appends OCI hooks to the in-memory spec at four lifecycle points: \texttt{createRuntime} (load the generated AppArmor profile), \texttt{prestart} (register the seccomp BPF hook that will write the allow-list), \texttt{poststart} (snapshot \texttt{/proc/<init>/status} for diagnostics and start the cgroup-wide capability tracer), and \texttt{poststop} (stop the tracer, unload the AppArmor profile, unpin the BPF map). The \texttt{Path} of every hook points at the running \texttt{runc} binary itself, resolved through the standard Go helper that reads \texttt{/proc/self/exe}; the arguments identify the hook as one of the scanner's internal sub-commands (see Section~\ref{sec:design-selfexec}).
 
@@ -186,7 +235,7 @@ If AppArmor is disabled on the host, the profile file is still written for refer
 
 \section{Self-Exec Hook Design}\label{sec:design-selfexec}
 
-The first iteration of the design shipped each hook as a shell script written into the bundle (\texttt{generated/.runc\_aa\_load.sh}, etc.). This broke requirement R3: the bundle gained executable files at scan time, which adds attack surface (the scripts are executable by anything that can write to the bundle directory) and breaks the OCI contract (a bundle is supposed to be portable). The current design moves every hook into a hidden sub-command of the runtime binary itself, registered next to \texttt{run}, \texttt{create}, and \texttt{exec}. Each sub-command:
+Every hook is a hidden sub-command of the runtime binary itself, registered next to \texttt{run}, \texttt{create}, and \texttt{exec}. Each sub-command:
 
 \begin{itemize}
     \item reads its parameters from environment variables passed through the OCI \texttt{Hook.Env} field (for example, the path of the AppArmor profile, the path of the \texttt{capable-bpfcc} binary, the path of \texttt{bpftool}, the container identifier), so that the OCI hook state JSON on stdin is the only unstructured input;
@@ -198,18 +247,12 @@ The result is that the OCI bundle contains no executable file produced by the sc
 
 \section{Evaluation Methodology}\label{sec:design-eval}
 
-This section describes the evaluation methodology; the experimental setup and measured outcomes are reported in Chapter~\ref{ch:experiments}, and their interpretation in Chapter~\ref{ch:discussion}.
+This section describes the evaluation methodology; measured outcomes are reported in Chapter~\ref{ch:experiments} and interpreted in Chapter~\ref{ch:discussion}.
 
-\textbf{Configurations.} The comparison puts five configurations side by side: (a)~upstream \texttt{runc} in its default state, as the baseline; (b)~the proposed runtime with its new empty-capability default but without the scanning mode, which measures the cost of the default change alone; (c)~the proposed runtime after a full scan-then-enforce cycle, which measures the cost and the security gain of the scanner's output; (d)~gVisor, as a representative of the user-space-kernel sandbox family; (e)~Kata Containers, as a representative of the microVM sandbox family. Configurations (d) and (e) are measured on the same hardware to remove host variance.
+\textbf{Empirical configurations.} The laboratory compares two configurations on the same OCI bundle and host: (a)~stock upstream \texttt{runc} without generated profiles (baseline), and (c)~the proposed runtime after a full \texttt{--security-scan} pass followed by enforcement with the generated seccomp, AppArmor, and capability artefacts. The intentionally vulnerable Flask workload in \texttt{runc-hardened-test} (system monitor plus calendar) is exercised with legitimate HTTP traffic during the scan and with a fixed post-exploitation payload script before and after hardening.
 
-\textbf{Planned workloads.} The evaluation is built around a curated set of \emph{intentionally vulnerable containers} taken from the application-security training ecosystem: OWASP Juice Shop and comparable web-application targets, deliberately misconfigured database containers, and minimal single-process workloads (\texttt{busybox}, \texttt{nginx}, \texttt{redis}) as smoke baselines. The goal is two-fold. First, the vulnerable containers give a realistic setting in which to measure whether the generated profile actually blocks the exploitation paths the training material documents. Second, the smoke baselines give a low-noise setting in which to measure the performance cost of the hardened runtime.
+\textbf{Empirical metrics.} Profile-quality metrics (RQ1) cover the generated seccomp allow-list, cgroup-wide capability trace, and AppArmor complain-mode profile, including known gaps (file capabilities, audit parsing). Containment metrics (RQ3) report per attack class whether post-injection actions succeed under baseline vs.\ hardened enforcement. Edge cases and drawbacks are documented explicitly rather than as an implementation history.
 
-\textbf{Metrics (planned).} Three families of metrics are in scope: (i)~performance metrics, including container startup latency (cold and warm), steady-state CPU and memory overhead, sequential and random I/O bandwidth, and TCP throughput; (ii)~security-effectiveness metrics, measured as the fraction of curated container-escape and lateral-movement attempts blocked by each configuration; (iii)~profile-quality metrics, reported for the proposed runtime only, including the size of the generated seccomp allow-list, the size of the observed capability set, and the number of AppArmor complain entries that would be refined into deny rules.
+\textbf{Analytical comparison.} Manual tuning, cluster-side recorders (SPO, Inspektor Gadget), and sandboxed runtimes (gVisor, Kata) are compared qualitatively using Table~\ref{tab:competitors} and the literature~\cite{wang2022,viktorsson2020,volpert2024}. No head-to-head sandbox benchmarks are run in this thesis; startup and steady-state costs for sandboxes are cited from prior work only.
 
-\textbf{Comparison method.} Security effectiveness is reported per attack class (reconnaissance, sensitive file read, reverse shell, mount probe, persistence) rather than as a single aggregated score, so that the reader can see which layer---seccomp, AppArmor, or capabilities---dominated each block. Performance comparison uses the same container images per workload across runtimes. Reproducer scripts, bundle definitions, and scan flags are versioned in the \texttt{runc-hardened-test} and \texttt{performance-evaluation} repositories.
-
-\textbf{Reproducibility.} Every performance measurement runs ten times after one warm-up iteration, with the median reported. Security-effectiveness runs use a fixed payload script in the \texttt{runc-hardened-test} repository so that baseline and hardened responses can be compared byte-for-byte. The laboratory host is Ubuntu~24.04 with cgroup~v2 and AppArmor enabled.
-
-\section{Summary}\label{sec:design-summary}
-
-This chapter presented the design of the proposed runtime extension. The overall shape of the system is a two-mode runtime: a default mode that behaves as a drop-in \texttt{runc}, and a scanning mode that, behind a single CLI flag, runs the workload under relaxed confinement, records its behaviour through three independent tracers, and narrows the on-disk spec to the observed set. The design is driven by five requirements --- single-flag user experience, three profiles from one run, full \texttt{runc} compatibility, minimal dependency surface, and safe-by-construction finalisation --- and every decision in the three mechanism-specific sub-pipelines (capabilities, seccomp, AppArmor) follows from one of them. The threat model is deliberately narrow: the scanner protects the kernel-side perimeter against syscall-, capability-, and path-based escape attempts, and leaves the application-layer and supply-chain classes to controls one layer up. The implementation, experiments, and discussion are described in Chapters~\ref{ch:impl}--\ref{ch:discussion}.
+\textbf{Reproducibility.} The laboratory protocol (\texttt{setup.sh}, \texttt{scan.sh}, \texttt{apply.sh}, \texttt{run-apparmor-public.sh}) is versioned in \texttt{runc-hardened-test}. The runtime repository provides integration smoke tests with stubbed external tools. The host is Ubuntu~24.04 with cgroup~v2 and AppArmor enabled.

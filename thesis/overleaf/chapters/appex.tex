@@ -31,7 +31,7 @@ runc run [--default-capabilities] [--default-capabilities-docker]
 
   --scan-seccomp-hook PATH
        Override the auto-detected oci-seccomp-bpf-hook binary.
-       Mostly useful for the contrib stub in CI smoke runs.
+       Mostly useful for the contrib stub in integration smoke runs.
 
   --scan-capable PATH
        Override the auto-detected capable-bpfcc binary.
@@ -103,7 +103,7 @@ profile runc_scan_<container-id> flags=(complain,
 cd runc
 make
 
-# 2. Run the smoke pack against the contrib stubs.
+# 2. Run the integration smoke pack against the contrib stubs.
 sudo make localintegration TESTPATH=/security_scan.bats
 
 # 3. Drive a real workload (requires bpfcc-tools, oci-seccomp-bpf-hook,

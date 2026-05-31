@@ -1,8 +1,18 @@
 # runc (thesis fork)
 
-A fork of [opencontainers/runc](https://github.com/opencontainers/runc) for a bachelor's thesis: **zero default capabilities**, optional legacy capability sets, and a **`--security-scan`** mode for recording seccomp / AppArmor / capabilities without Kubernetes or a recorder daemon.
+A fork of [opencontainers/runc](https://github.com/opencontainers/runc) for a bachelor's thesis: **automatic generation of container security profiles** (Linux capabilities, seccomp, AppArmor) from observed workload behavior.
 
-Upstream runc documentation: [src/README.md](src/README.md). Change log by epic: [.cursor/log/](.cursor/log/).
+Upstream runc docs: [src/README.md](src/README.md). Implementation notes by epic: [.cursor/log/](.cursor/log/).
+
+## What this fork adds
+
+| Area | Change |
+|------|--------|
+| **Default posture** | `runc spec` emits **zero** capabilities; containers start fully locked down unless you opt in |
+| **Legacy caps** | `--default-capabilities` (3 caps, upstream runc) or `--default-capabilities-docker` (14 caps, historical Docker) |
+| **`--security-scan`** | Learning mode: relax in-memory policy → trace → write narrowed profiles into `config.json` and `generated/` |
+
+The two capability flags are **mutually exclusive**.
 
 ## Build
 
@@ -11,154 +21,144 @@ make
 sudo make install   # → /usr/local/sbin/runc
 ```
 
-Dependencies for a standard build are the same as upstream (Debian/Ubuntu):
+Debian/Ubuntu build dependencies (same as upstream):
 
 ```bash
 apt update && apt install -y make gcc linux-libc-dev libseccomp-dev pkg-config git
 ```
 
-## Differences from upstream
+## Capability modes
 
-| Feature | Behavior |
-|---------|----------|
-| `runc spec` | Empty `process.capabilities` (0 caps) |
-| `--default-capabilities` | 3 caps (like old upstream `runc spec`) |
-| `--default-capabilities-docker` | 14 caps (historical Docker) |
-| `--security-scan` | Learning mode: relax → trace → artifacts in `generated/` + cap narrowing in `config.json` |
+| Mode | How | Cap count |
+|------|-----|-----------|
+| Default | `runc spec` / no flags | **0** |
+| Upstream runc | `--default-capabilities` | 3 (`CAP_AUDIT_WRITE`, `CAP_KILL`, `CAP_NET_BIND_SERVICE`) |
+| Docker legacy | `--default-capabilities-docker` | 14 |
 
-The `--default-capabilities` and `--default-capabilities-docker` flags are mutually exclusive.
+```bash
+runc spec
+runc run mycontainer                              # 0 caps
+runc run --default-capabilities mycontainer       # 3 caps
+runc run --default-capabilities-docker mycontainer  # 14 caps
+```
 
 ## Host setup for `--security-scan`
 
-Required: **cgroup v2**, **bpffs** (`/sys/fs/bpf`), **AppArmor** (optional, but without it the MAC artifact is file-only), **oci-seccomp-bpf-hook**, **capable-bpfcc** with `--cgroupmap`, **bpftool**.
+**Required:** cgroup **v2** (unified), **bpffs** (`/sys/fs/bpf`), **AppArmor** (optional — without it MAC artifacts are file-only), **oci-seccomp-bpf-hook**, **capable-bpfcc** with `--cgroupmap`, **bpftool**.
 
 ```bash
 sudo script/setup-scan-host.sh
 ```
 
-The script installs packages, mounts bpffs, verifies tools, and creates user `runcscan` (uid 65532) for the recommended non-root scan.
+The script installs packages, mounts bpffs, verifies tools, and creates system user `runcscan` (uid/gid 65532) for recommended non-root scans.
 
-**oci-seccomp-bpf-hook** is not included in the script — install it separately (see [thesis-ci-repo](https://github.com/) Ansible `scanner_host` or build from [containers/oci-seccomp-bpf-hook](https://github.com/containers/oci-seccomp-bpf-hook)).
+**oci-seccomp-bpf-hook** is not installed by the script — install separately ([containers/oci-seccomp-bpf-hook](https://github.com/containers/oci-seccomp-bpf-hook)) or via Ansible in [dpttk/thesis-ci-repo](https://github.com/dpttk/thesis-ci-repo) (`scanner_host` role).
 
 ## Scan mode
 
-### Running a scan
+### Run a scan
 
 ```bash
 cd /path/to/bundle
 sudo runc run --security-scan mycontainer
 ```
 
-Additional flags (if auto-detection fails):
+Optional paths (when auto-detection fails):
 
-- `--scan-seccomp-hook PATH` — `oci-seccomp-bpf-hook` (or stub from `contrib/` for tests)
-- `--scan-capable PATH` — `capable-bpfcc` with `--cgroupmap` support
-- `--scan-bpftool PATH` — `bpftool` for cgroup BPF map
+| Flag | Tool |
+|------|------|
+| `--scan-seccomp-hook PATH` | `oci-seccomp-bpf-hook` (or [contrib stub](contrib/runc-security-scan-stub-seccomp-hook.sh) for CI smoke) |
+| `--scan-capable PATH` | `capable-bpfcc` with `--cgroupmap` |
+| `--scan-bpftool PATH` | `bpftool` for cgroup BPF map pin/update |
 
-Recommendations for high-quality cap tracing:
+**Recommendations for complete traces:**
 
-- `process.user.uid` ≠ 0 (e.g. 65532 / `runcscan`)
-- Run **all** workload scenarios that should be covered by the profile (CI probe, e2e, manual tests)
-- Root inside the container is not forbidden, but the kernel rarely calls `cap_capable()` for uid 0 — the trace will be incomplete
+- Set `process.user.uid` ≠ 0 (e.g. `65532` / `runcscan`) — uid 0 rarely triggers `cap_capable()` in the kernel trace
+- Exercise **all** code paths the production profile must cover (startup, shutdown, cron, DNS/TLS, error branches, etc.)
+- Use cgroup-wide tracing: children in the same cgroup are included via `--cgroupmap`
 
-### What happens (5 phases)
+### Pipeline (5 phases)
 
-1. **Relax (in memory only)** — removes `linux.seccomp`, `process.selinuxLabel`, `noNewPrivileges`; grants all known CAP_*; AppArmor is replaced with a complain profile `runc_scan_<id>`. On-disk `config.json` is not modified.
-2. **Hooks** — OCI hooks on the same `runc` binary (`scan-aa-*`, `scan-cap-*`) + external prestart `oci-seccomp-bpf-hook`.
-3. **Run** — the container runs, tracers write logs.
-4. **Shutdown** — stop `capable-bpfcc`, unpin BPF map.
-5. **Finalize** — on successful exit: **only** `process.capabilities` in `config.json` is replaced with the observed set (empty trace → empty set).
+1. **Relax (in memory only)** — clears `linux.seccomp`, `process.selinuxLabel`, `noNewPrivileges`; grants all known `CAP_*`; loads a complain-mode AppArmor stub `runc_scan_<id>`. On-disk `config.json` is unchanged until finalize.
+2. **Hooks** — OCI hooks on the same `runc` binary (`scan-aa-*`, `scan-cap-*`) plus external prestart `oci-seccomp-bpf-hook`.
+3. **Run** — workload executes; tracers record syscalls, capability checks, and AppArmor policy events.
+4. **Poststop** — stop `capable-bpfcc`, unpin BPF map; collect AppArmor audit lines from `journalctl -k` (fallback `dmesg`) into `generated/apparmor.profile`.
+5. **Finalize** (successful exit only) — writes narrowed policy into `config.json` and backs up the pre-scan spec once as `generated/spec.original.json`.
 
 ### Artifacts (`<bundle>/generated/`)
 
-| File | Source | Usability |
-|------|--------|-----------|
-| `seccomp.json` | oci-seccomp-bpf-hook | **Yes** — ready OCI allow-list with full workload coverage |
-| `capable-bpfcc.log` | BCC | Raw log; applied to spec after finalize |
-| `apparmor.profile` | Complain template + audit | **Partial** — draft; `aa-logprof` needed for enforce |
-| `capabilities-from-proc-status.txt` | snapshot | Diagnostics only, not used for finalize |
-| `apparmor-load.log`, `apparmor-README.txt` | runc | Debug / instructions |
+| File | Role |
+|------|------|
+| `seccomp.json` | OCI allow-list from oci-seccomp-bpf-hook → wired into `linux.seccomp` on finalize |
+| `capable-bpfcc.log` | BCC trace → `process.capabilities` on finalize (replace, not merge; empty trace → empty set) |
+| `apparmor.profile` | Stub + audit-collected rules; complain → enforce when rules were collected |
+| `spec.original.json` | One-time backup of `config.json` before first finalize |
+| `capabilities-from-proc-status.txt` | `/proc/<init>/status` snapshot — diagnostics only |
+| `apparmor-load.log`, `apparmor-README.txt` | Load/unload and operator notes |
+| `.runc_cap_trace.pid`, `.runc_aa_started_at` | Internal hook state |
 
-**SELinux:** profile is **not generated**. If the bundle had `process.selinuxLabel`, it is cleared only for the duration of the scan so syscalls are not masked.
+No executable scripts are written into the bundle — hooks are hidden `runc` subcommands (`scan-aa-load`, `scan-aa-unload`, `scan-cap-snapshot`, `scan-cap-trace-start`, `scan-cap-trace-stop`).
 
-### Subsystem quality
+**SELinux:** profiles are **not** generated. An existing `process.selinuxLabel` is cleared only for the scan so tracing is not masked.
 
-**Seccomp** — high quality when:
+### Subsystem notes
 
-- a real `oci-seccomp-bpf-hook` is installed (not stub);
-- seccomp is absent from the spec during the scan (relax);
-- the workload exercised all required code paths.
+**Seccomp** — production quality when a real `oci-seccomp-bpf-hook` is used, seccomp was relaxed during the scan, and the workload exercised all required paths. The [contrib stub](contrib/runc-security-scan-stub-seccomp-hook.sh) produces an empty allow-all profile for **CI smoke only**.
 
-Output is a valid `generated/seccomp.json` in OCI format. The stub from `contrib/runc-security-scan-stub-seccomp-hook.sh` produces an empty allow-all profile **for CI smoke tests only**.
+**Capabilities** — cgroup-wide via `capable-bpfcc --cgroupmap` and a pinned BPF map under `/sys/fs/bpf/runc-scan/<id>/`.
 
-**AppArmor** — **not ready for production enforce out of the box**:
+**AppArmor** — complain stub with `abstractions/base`, `nameservice`, `ssl_certs`; poststop appends rules parsed from kernel audit between sentinel markers; finalize flips to **enforce** only when audit rules were collected (otherwise complain remains so the next run does not break on an empty profile).
 
-- during the scan, a minimal profile with `flags=(complain,…)` and `#include <abstractions/base>` is written;
-- real path/file rules accumulate in the host **audit log**, not automatically in the file;
-- for enforce: `sudo aa-logprof` (or manual editing) → `apparmor_parser -r` → profile name in `process.apparmorProfile`.
+## After the scan (normal `runc run`)
 
-**Capabilities** — the only mechanism that **automatically** updates `config.json` after a scan (replace by trace, no merge).
+On successful `--security-scan`, `config.json` already contains:
 
-## Production run (enforce)
+- narrowed `process.capabilities`
+- `linux.seccomp` from `generated/seccomp.json`
+- `process.apparmorProfile` pointing at `runc_scan_<id>`
 
-**Seccomp and AppArmor are not applied automatically during a normal `runc run`.** After scanning, the operator manually wires profiles into `config.json` (or into a CI template).
+A subsequent **`runc run`** (without `--security-scan`) applies caps and seccomp through libcontainer as usual. AppArmor is loaded automatically via `apparmor_parser -r` when the profile name starts with `runc_scan_` and matches `generated/apparmor.profile` (`ensureGeneratedProfiles`).
 
-### Seccomp
+To roll back: restore from `generated/spec.original.json`.
 
-Copy or embed the contents of `generated/seccomp.json` into the bundle's `linux.seccomp` (fields `defaultAction`, `syscalls`, … per [runtime-spec](https://github.com/opencontainers/runtime-spec/blob/main/config-linux.md#seccomp)).
+For legacy capability sets on a fresh spec: `--default-capabilities` / `--default-capabilities-docker` (incompatible with the minimal-privilege goal).
 
-Example (structure depends on your profile):
-
-```json
-"linux": {
-  "seccomp": { /* contents of generated/seccomp.json */ }
-}
-```
-
-### AppArmor
-
-1. Refine the profile (`aa-logprof` / editor).
-2. Load on the host: `sudo apparmor_parser -r -W generated/apparmor.profile`
-3. In `config.json`: `"process": { "apparmorProfile": "runc_scan_<id>" }` (or your own name after renaming).
-
-The profile must be loaded in the kernel **before** `runc run`.
-
-### Capabilities
-
-After a successful `--security-scan`, `config.json` already contains a narrowed `process.capabilities`. Normal run:
-
-```bash
-sudo runc run mycontainer
-```
-
-For a legacy set if needed: `--default-capabilities` / `--default-capabilities-docker` (not compatible with the "minimum privileges" goal).
-
-## Implementation (brief)
+## Implementation
 
 | Component | Files |
 |-----------|-------|
 | Scan orchestration | `src/scanner_linux.go` |
-| Self-exec hooks | `src/scanner_hooks_linux.go` |
+| Self-exec OCI hooks | `src/scanner_hooks_linux.go` |
 | Cgroup BPF map | `src/scanner_bpf_linux.go` |
-| Finalize caps | `src/scanner_finalize_linux.go` |
-| Cap defaults | `src/utils_linux.go`, `libcontainer/specconv/example.go` |
-| CLI | `src/run.go` |
+| Finalize (caps, seccomp, AppArmor) | `src/scanner_finalize_linux.go` |
+| AppArmor audit collection | `src/scanner_apparmor_linux.go` |
+| Auto-load on normal run | `src/scanner_apply_linux.go` |
+| Cap defaults / CLI wiring | `src/utils_linux.go`, `libcontainer/specconv/example.go`, `src/run.go` |
+| Host provisioning | `script/setup-scan-host.sh` |
+| CI stubs | `contrib/runc-security-scan-stub-*.sh` |
 
-Hidden subcommands (invoked only as OCI hooks): `scan-aa-load`, `scan-aa-unload`, `scan-cap-snapshot`, `scan-cap-trace-start`, `scan-cap-trace-stop`.
+## Tests and CI
 
-No executable scripts are created in the bundle — only data under `generated/`.
-
-## Tests
+**This repo:**
 
 ```bash
-# unit + integration (upstream)
-make test
+make test   # unit + integration (upstream)
 
-# scanner smoke (requires root, stub hook)
+# scanner smoke (root, stub hook)
 sudo make localintegration TESTPATH=/security_scan.bats
 ```
 
-E2E bundle matrix: `thesis-ci-repo` repository (self-hosted runner, `scripts/run-scan.sh`).
+On push/PR, [.github/workflows/publish-runc-binary.yml](.github/workflows/publish-runc-binary.yml) builds `runc`, publishes artifact `runc-<sha>`, and dispatches `runc-build-available` to the CI repo. Details: [.cursor/log/CI.md](.cursor/log/CI.md).
+
+**E2E matrix** ([dpttk/thesis-ci-repo](https://github.com/dpttk/thesis-ci-repo)): self-hosted runner, real `oci-seccomp-bpf-hook` + BCC, bundle matrix (`busybox-default`, `juice-shop`, …), profile verification, Object Storage upload under `scans/<runc_ref>/<run_id>/<bundle>/`.
+
+## Related repositories
+
+| Repo | Purpose |
+|------|---------|
+| [dpttk/runc](https://github.com/dpttk/runc) | This fork |
+| [dpttk/thesis-ci-repo](https://github.com/dpttk/thesis-ci-repo) | Scanner E2E CI, Terraform/Ansible runner, OCI bundles |
+| [opencontainers/runc](https://github.com/opencontainers/runc) | Upstream |
 
 ## License
 

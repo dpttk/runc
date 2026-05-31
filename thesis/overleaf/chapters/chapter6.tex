@@ -1,40 +1,40 @@
 
 \chapter{Discussion}\label{ch:discussion}
 
-This chapter interprets the experimental results of Chapter~\ref{ch:experiments} in light of the design goals and the competitive landscape from Chapter~\ref{ch:litreview}. Section~\ref{sec:disc-security} discusses security effectiveness; Section~\ref{sec:disc-scanner} discusses scanner gaps uncovered during evaluation; Section~\ref{sec:disc-performance} discusses the expected performance trade-off; Section~\ref{sec:disc-validity} states threats to validity.
+This chapter interprets the experimental results of Chapter~\ref{ch:experiments} in light of the design goals and the competitive landscape from Chapter~\ref{ch:litreview}. Section~\ref{sec:disc-security} discusses security effectiveness; Section~\ref{sec:disc-scanner} discusses scanner limitations; Section~\ref{sec:disc-positioning} discusses analytical positioning; Section~\ref{sec:disc-validity} states threats to validity.
 
 \section{Security effectiveness after application compromise}\label{sec:disc-security}
 
-The laboratory run supports the thesis claim that kernel-side confinement can be automated at the runtime layer without removing application vulnerabilities. Command injection in the Flask diagnostics endpoints remained exploitable under both baseline and hardened configurations; the value of scan-then-enforce appears only \emph{after} the attacker obtains shell access. Under stock \texttt{runc}, that access effectively matches an unconstrained root inside the container namespace for the payloads tested. Under hardened enforcement, the same injection string could still spawn a shell, but subsequent actions that depend on broad syscall access, sensitive file reads, or network redirection were blocked.
+The laboratory run supports the thesis claim that kernel-side confinement can be automated at the runtime layer without removing application vulnerabilities. Command injection in the Flask diagnostics endpoints remained exploitable under both baseline and hardened configurations; the value of scan-then-enforce appears only \emph{after} the attacker obtains shell access. Under stock \texttt{runc}, that access effectively matches an unconstrained root inside the container namespace for the payloads tested. Under hardened enforcement on this workload, the attacker could still reach the injection primitive, but could not turn it into a useful post-exploitation environment: reconnaissance (\texttt{id}, \texttt{hostname}, \texttt{uname}), sensitive reads, reverse shells, and mount probes were blocked because the enforced seccomp profile omits process-creation and high-risk syscalls that the scan never observed.
+
+This outcome must not be read as eliminating remote code execution in general. Other architectures, privileged or misconfigured deployments (\texttt{docker.sock} mounts, \texttt{--privileged}, excessive capabilities left in \texttt{config.json}), or poorly designed applications may still offer paths to code execution even when profiles are present. On the laboratory stack, however, the combination of narrowed capabilities, seccomp, and AppArmor prevented the tested injection payloads from performing most host-oriented actions; sensitive host files and syscall classes outside the learned set remained unreachable.
 
 This separation matters for practitioners. Runtime-generated profiles are not a substitute for secure coding or web-application firewalls. They are a second line of defence that limits blast radius when the first line fails---the same role cluster-side recorders play when profiles are pinned to pods, but reachable from a developer workstation with one CLI flag.
 
-Compared with sandboxed runtimes, the hardened traditional path does not replace the user-space kernel or microVM boundary. It instead stacks seccomp, AppArmor, and capability narrowing on the shared-kernel model. The experiment therefore measures a different point on the security--performance spectrum: less isolation than gVisor or Kata in principle, but far lower integration cost and no change to the orchestration stack.
+The empirical comparison in this thesis is default \texttt{runc} vs.\ scan-then-enforce on a shared-kernel workload. Sandboxed runtimes remain relevant as an analytical alternative: they trade integration cost and overhead for hardware- or user-space-kernel isolation, whereas hardened \texttt{runc} stacks seccomp, AppArmor, and capabilities without leaving the OCI ecosystem.
 
 \section{Scanner gaps and profile quality}\label{sec:disc-scanner}
 
-The evaluation exposed three implementation issues that a reader should weigh when judging RQ1.
+The evaluation exposed three limitations that a reader should weigh when judging RQ1.
 
 \textbf{AppArmor audit parsing.} Complain-mode learning is only useful if the collector sees every would-be denial. Treating \texttt{ALLOWED} audit records as first-class evidence fixed missing writable-path rules for calendar storage; without that fix, enforcement mode broke a legitimate feature while appearing to produce a complete profile.
 
-\textbf{File capabilities.} Behavioural capability tracing records kernel checks, not privileges embedded in executable files. \texttt{ping} is a common case: \texttt{CAP\_NET\_RAW} on the binary does not necessarily produce \texttt{cap\_capable} events during a normal ping. Until file capabilities are merged from \texttt{security.capability} xattrs at exec time, operators need an explicit allow-list step---documented in the laboratory's \texttt{apply.sh} rather than concealed in the scanner.
+\textbf{File capabilities.} Behavioural capability tracing records kernel checks, not privileges embedded in executable files. \texttt{ping} is a common case: \texttt{CAP\_NET\_RAW} on the binary does not necessarily produce \texttt{cap\_capable} events during a normal ping. Until file capabilities are merged from \texttt{security.capability} xattrs at exec time, operators need an explicit allow-list step---documented in the laboratory's \texttt{apply.sh}.
 
 \textbf{Coverage equals exercised paths.} The generated profiles are only as complete as the traffic driven during the scan. The laboratory script covers the main UI and diagnostic flows but does not claim to hit cron jobs, certificate rotation, or rare error handlers. This limitation is shared with SPO, Inspektor Gadget, and every other dynamic profiler; the mitigation is to run the scan under the same integration tests that gate releases.
 
-\section{Performance trade-off}\label{sec:disc-performance}
+\section{Analytical positioning}\label{sec:disc-positioning}
 
-RQ3 is only partially answered numerically at the time of writing. Conceptually, three cost layers should be kept separate when reading Table~\ref{tab:perf-startup}: (i)~the cost of swapping the OCI binary for the hardened fork without generated profiles; (ii)~the cost of enforcing a workload-specific seccomp and AppArmor profile on every start; and (iii)~the cost of gVisor's user-space kernel as an upper bound on what ``buying isolation'' typically costs.
-
-The security laboratory shows that scan time is paid once per profile revision; steady-state operation pays enforcement overhead only. For teams that rebuild images rarely but restart containers often, enforcement-time cost dominates---which is why the performance harness measures both bare binary swap and bundle enforcement separately.
+Manual tuning and cluster recorders can, with sufficient effort, produce profiles at least as tight as the runtime scanner. The contribution of this work is lowering the operational floor: one flag, no cluster, no CRDs. Sandboxes address a different threat model (kernel isolation) and are not interchangeable with profile-based hardening; Wang et al.~\cite{wang2022} and Volpert et al.~\cite{volpert2024} still show large performance gaps between default \texttt{runc} and gVisor, but they do not measure hardened \texttt{runc}. Extending the empirical study to startup and steady-state benchmarks against sandboxes is left to future work using a dedicated \texttt{performance-evaluation} harness.
 
 \section{Threats to validity}\label{sec:disc-validity}
 
 \begin{enumerate}
     \item \textbf{Single primary workload.} Generalisation to other web stacks requires a new scan and a new attack script per bundle.
-    \item \textbf{Qualitative security metrics.} Table~\ref{tab:security-lab} reports succeed/block outcomes, not a normalised score across attack classes; aggregation remains workload-dependent.
+    \item \textbf{Qualitative security metrics.} Table~\ref{tab:security-lab} reports succeed/block outcomes, not a normalised score across attack classes.
     \item \textbf{Documented post-scan adjustments.} \texttt{REQUIRED\_CAPS} and \texttt{WRITABLE\_PATHS} mean the hardened run is not purely ``scan output only'' until file-capability merge is implemented.
     \item \textbf{Out-of-scope escapes.} Runtime CVEs, \texttt{docker.sock} mounts, and privileged containers were not tested.
-    \item \textbf{Pending benchmark archive.} Performance claims against gVisor rest on the planned \texttt{performance-evaluation} run until Table~\ref{tab:perf-startup} is populated.
+    \item \textbf{Analytical sandbox comparison.} Claims about gVisor and Kata rest on prior publications, not measurements executed for this thesis.
 \end{enumerate}
 
-Despite these bounds, the experiment is sufficient to answer RQ2 affirmatively on the tested workload and to characterise the remaining engineering work for RQ1 (file capabilities, broader scan coverage) without overstating what automatic profiling guarantees.
+Despite these bounds, the experiment is sufficient to answer RQ3 affirmatively on the tested workload and to characterise the remaining engineering work for RQ1 (file capabilities, broader scan coverage) without overstating what automatic profiling guarantees.

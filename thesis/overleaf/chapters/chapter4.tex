@@ -7,53 +7,55 @@ Section~\ref{sec:impl-overview} gives an overview of the implemented prototype a
 
 \section{Implementation Overview}\label{sec:impl-overview}
 
-The implementation is a fork of the upstream \texttt{runc} reference runtime. The fork keeps the upstream layout intact and adds a small number of new files at the repository root. The entry point of the scanner is plugged into the normal \texttt{runc run} and \texttt{runc create} code paths, so that the scanner is never reached for invocations that do not set the \texttt{-{}-security-scan} flag. When the flag is set, the runtime performs the five-phase pipeline of Section~\ref{sec:design-overview}: in-memory spec relaxation, hook installation, normal container execution, tracer shutdown, and on-disk finalisation.
+The implementation is a fork of the upstream \texttt{runc} reference runtime, published at \url{https://github.com/dpttk/runc}. The evaluation laboratory that drives scan-then-enforce against a vulnerable web workload lives in a separate repository, \url{https://github.com/dpttk/runc-hardened-test}. The fork keeps the upstream layout intact and adds a small number of new files at the repository root. The entry point of the scanner is plugged into the normal \texttt{runc run} and \texttt{runc create} code paths, so that the scanner is never reached for invocations that do not set the \texttt{-{}-security-scan} flag. When the flag is set, the runtime performs the five-phase pipeline of Section~\ref{sec:design-overview}: in-memory spec relaxation, hook installation, normal container execution, tracer shutdown, and on-disk finalisation.
 
 Figure~\ref{fig:callflow} shows the high-level call flow. The control path through the runtime is unchanged on the upstream side: \texttt{run.go} parses flags, \texttt{create.go} materialises the container, and \texttt{utils\_linux.go} drives the hook lifecycle. The scanner adds three extension points to this flow: a relaxation-and-hook-installation step at spec load time, a set of hook sub-commands that run inside the runtime binary during the container lifecycle, and a finalisation step that runs after the container exits.
 
 \begin{figure}[H]
 \centering
+\resizebox{0.95\textwidth}{!}{%
 \begin{tikzpicture}[
-    node distance=0.45cm and 0.55cm,
-    entry/.style={rectangle, draw, rounded corners=2pt, minimum width=3.1cm, minimum height=0.85cm, align=center, fill=gray!10, font=\small},
-    comp/.style={rectangle, draw, rounded corners=2pt, minimum width=3.1cm, minimum height=0.85cm, align=center, font=\small},
-    hook/.style={rectangle, draw, rounded corners=2pt, minimum width=3.3cm, minimum height=0.75cm, align=center, font=\footnotesize},
-    artefact/.style={cylinder, shape border rotate=90, aspect=0.25, draw, minimum width=2.6cm, minimum height=0.85cm, align=center, font=\footnotesize},
+    node distance=0.4cm and 0.5cm,
+    entry/.style={rectangle, draw, rounded corners=2pt, minimum width=2.6cm, minimum height=0.8cm, align=center, fill=gray!10, font=\small},
+    comp/.style={rectangle, draw, rounded corners=2pt, minimum width=2.8cm, minimum height=0.8cm, align=center, font=\small},
+    hook/.style={rectangle, draw, rounded corners=2pt, minimum width=2.5cm, minimum height=0.7cm, align=center, font=\footnotesize},
+    artefact/.style={cylinder, shape border rotate=90, aspect=0.25, draw, minimum width=2.2cm, minimum height=0.75cm, align=center, font=\footnotesize},
     arrow/.style={-Stealth, thick},
     dashedarrow/.style={-Stealth, thick, dashed}
 ]
     \node[entry] (run) {\texttt{runc run}};
     \node[entry, right=of run] (create) {\texttt{runc create}};
-    \node[comp, below=0.8cm of $(run)!0.5!(create)$] (scanner) {\texttt{scanner\_linux.go}\\relax spec, install hooks};
-    \node[comp, left=1.1cm of scanner] (defaults) {\texttt{utils\_linux.go}\\capability defaults};
-    \node[comp, right=1.1cm of scanner] (final) {\texttt{scanner\_finalize\_linux.go}\\narrow \texttt{config.json}};
+    \node[comp, below=0.65cm of run] (scanner) {\texttt{scanner\_linux.go}};
+    \node[comp, below=0.65cm of create] (final) {\texttt{scanner\_finalize}};
+    \node[comp, below=0.55cm of scanner] (defaults) {\texttt{utils\_linux.go}};
 
-    \node[hook, below=1.0cm of defaults] (aaload) {\texttt{scan-aa-load}};
-    \node[hook, right=0.15cm of aaload] (capstart) {\texttt{scan-cap-trace-start}};
-    \node[hook, right=0.15cm of capstart] (snap) {\texttt{scan-cap-snapshot}};
-    \node[hook, below=0.25cm of aaload] (capstop) {\texttt{scan-cap-trace-stop}};
-    \node[hook, right=0.15cm of capstop] (aaunload) {\texttt{scan-aa-unload}};
+    \node[hook, below=0.9cm of defaults] (aaload) {\texttt{scan-aa-load}};
+    \node[hook, right=0.1cm of aaload] (capstart) {\texttt{scan-cap-trace-start}};
+    \node[hook, right=0.1cm of capstart] (snap) {\texttt{scan-cap-snapshot}};
+    \node[hook, below=0.2cm of aaload] (capstop) {\texttt{scan-cap-trace-stop}};
+    \node[hook, right=0.1cm of capstop] (aaunload) {\texttt{scan-aa-unload}};
 
-    \node[artefact, below=0.75cm of capstop] (log) {\texttt{capable-}\\\texttt{bpfcc.log}};
-    \node[artefact, right=0.25cm of log] (sec) {\texttt{seccomp.}\\\texttt{json}};
-    \node[artefact, right=0.25cm of sec] (aa) {\texttt{apparmor.}\\\texttt{profile}};
+    \node[artefact, below=0.65cm of capstop] (log) {\texttt{capable-bpfcc.log}};
+    \node[artefact, right=0.2cm of log] (sec) {\texttt{seccomp.json}};
+    \node[artefact, right=0.2cm of sec] (aa) {\texttt{apparmor.profile}};
 
     \draw[arrow] (run) -- (scanner);
     \draw[arrow] (create) -- (scanner);
     \draw[arrow] (defaults) -- (scanner);
     \draw[arrow] (scanner) -- (final);
-    \draw[dashedarrow] (scanner.south) -- ++(0,-0.25) -| (aaload.north);
-    \draw[dashedarrow] (scanner.south) -- ++(0,-0.25) -| (capstart.north);
-    \draw[dashedarrow] (scanner.south) -- ++(0,-0.25) -| (snap.north);
-    \draw[dashedarrow] (scanner.south) -- ++(0,-0.25) -| (capstop.north);
-    \draw[dashedarrow] (scanner.south) -- ++(0,-0.25) -| (aaunload.north);
+    \draw[dashedarrow] (scanner.south) |- (aaload.north);
+    \draw[dashedarrow] (scanner.south) |- (capstart.north);
+    \draw[dashedarrow] (scanner.south) |- (snap.north);
+    \draw[dashedarrow] (capstop.north) -- (scanner.south);
+    \draw[dashedarrow] (aaunload.north) -- (scanner.south);
     \draw[arrow] (capstart) -- (log);
     \draw[arrow] (capstop) -- (log);
-    \draw[arrow] (scanner) -- (sec);
     \draw[arrow] (aaload) -- (aa);
-    \draw[arrow] (log) -- ++(0,-0.25) -| (final.south);
-\end{tikzpicture}
-\caption{Call-flow view of the proposed runtime. Solid arrows show direct function calls; dashed arrows show OCI hooks whose \texttt{Path} points back at the runtime binary and whose argument names the sub-command to execute.}
+    \draw[arrow] (scanner.east) -| (sec.north);
+    \draw[arrow] (log.south) -- ++(0,-0.2) -| (final.south);
+\end{tikzpicture}%
+}
+\caption{Call-flow view of the proposed runtime. Solid arrows show direct function calls; dashed arrows show OCI hooks whose \texttt{Path} points back at the runtime binary.}
 \label{fig:callflow}
 \end{figure}
 
@@ -190,7 +192,7 @@ A host-side preconditions check runs before the scanner actually starts; it deci
 \texttt{capable-bpfcc -{}-cgroupmap} supported & Verified by parsing \texttt{capable-bpfcc -{}-help} output. \\
 \texttt{bpftool} available & On \texttt{PATH} or supplied via \texttt{-{}-scan-bpftool}. \\
 Unified cgroup-v2 hierarchy & Verified by reading \texttt{/proc/mounts}; hybrid hosts are rejected. \\
-\texttt{/sys/fs/bpf} is a \texttt{bpffs} mount & Verified by reading \texttt{/proc/mounts}; skipped under a test-only environment variable that redirects the pin root, so that CI can run under a mocked bpffs. \\
+\texttt{/sys/fs/bpf} is a \texttt{bpffs} mount & Verified by reading \texttt{/proc/mounts}; skipped under a test-only environment variable that redirects the pin root, so that integration smoke tests can run under a mocked bpffs. \\
 \bottomrule
 \end{tabular}
 \end{table}

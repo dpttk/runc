@@ -133,10 +133,12 @@ Isolation Capabilities}},
 @inproceedings{espe2020,
   title={Performance Evaluation of Container Runtimes},
   author={Espe, Lennart and Jindal, Anshul and Podolskiy, Vladimir and Gerndt, Michael},
-  booktitle={Proceedings of the 10th International Conference on Cloud Computing and Services Science},
+  booktitle={Proceedings of the 10th International Conference on Cloud Computing and Services Science (CLOSER 2020)},
   year={2020},
   pages={273--281},
-  publisher={SCITEPRESS}
+  publisher={SCITEPRESS},
+  doi={10.5220/0009340402730281},
+  url={https://www.scitepress.org/Papers/2020/93404/93404.pdf}
 }
 
 @inproceedings{bargmann2018,
@@ -159,11 +161,12 @@ Isolation Capabilities}},
 
 @inproceedings{canella2021,
   title={Automating Seccomp Filter Generation for Linux Applications},
-  author={Canella, Claudio and others},
-  booktitle={Proceedings of ACM CCS 2021},
+  author={Canella, Claudio and Werner, Mario and Gruss, Daniel and Schwarz, Michael},
+  booktitle={Proceedings of the 2021 ACM Cloud Computing Security Workshop (CCSW '21)},
   year={2021},
-  pages={2137--2152},
-  publisher={ACM}
+  pages={139--151},
+  publisher={ACM},
+  doi={10.1145/3474123.3486762}
 }
 
 @inproceedings{kozhirbayev2017,
@@ -219,6 +222,39 @@ Isolation Capabilities}},
   year={2019}
 }
 
+@misc{unit42cve20195736,
+  title={Breaking out of Docker via runC -- Explaining {CVE-2019-5736}},
+  author={Avrahami, Yuval},
+  year={2019},
+  howpublished={\url{https://unit42.paloaltonetworks.com/breaking-docker-via-runc-explaining-cve-2019-5736/}},
+  note={Unit 42, Palo Alto Networks; published 2019-02-21}
+}
+
+@inproceedings{alhindi2025,
+  title={Playing in the Sandbox: A Study on the Usability of Seccomp},
+  author={Alhindi, Maysara and Hallett, Joseph},
+  booktitle={Twenty-First Symposium on Usable Privacy and Security (SOUPS 2025)},
+  year={2025},
+  pages={225--240},
+  publisher={USENIX Association},
+  address={Seattle, WA},
+  month=aug,
+  url={https://www.usenix.org/conference/soups2025/presentation/alhindi}
+}
+
+@inproceedings{kuppili2025dockergate,
+  title={{DockerGate}: Automated Seccomp Policy Generation for Docker Images},
+  author={Kuppili, Rohit Venkata Satya},
+  booktitle={2025 13th International Symposium on Digital Forensics and Security (ISDFS)},
+  year={2025},
+  pages={1--6},
+  publisher={IEEE},
+  address={Boston, MA, USA},
+  month=apr,
+  doi={10.1109/isdfs65363.2025.11011992},
+  url={https://ieeexplore.ieee.org/abstract/document/11011992}
+}
+
 @misc{spo2025,
   title={Security Profiles Operator},
   author={{Kubernetes SIG Auth, kubernetes-sigs}},
@@ -265,4 +301,131 @@ Isolation Capabilities}},
   year={2024},
   howpublished={\url{https://www.youtube.com/watch?v=EhQI1qPVb0E}},
   note={Conference talk; accessed 2026-04-19}
+}
+
+% Snowballing additions (backward + forward from seeds; verified via publisher/USENIX/IEEE/ACM pages)
+
+@inproceedings{ghavamnia2020confine,
+  title={Confine: Automated System Call Policy Generation for Container Attack Surface Reduction},
+  author={Ghavamnia, Seyedhamed and Palit, Tapti and Benameur, Azzedine and Polychronakis, Michalis},
+  booktitle={23rd International Symposium on Research in Attacks, Intrusions and Defenses (RAID 2020)},
+  year={2020},
+  pages={443--458},
+  publisher={USENIX Association},
+  url={https://www.usenix.org/conference/raid2020/presentation/ghavanmnia}
+}
+
+@inproceedings{demarinis2020sysfilter,
+  title={sysfilter: Automated System Call Filtering for Commodity Software},
+  author={DeMarinis, Nicholas and Williams-King, Kent and Jin, Di and Fonseca, Rodrigo and Kemerlis, Vasileios P.},
+  booktitle={23rd International Symposium on Research in Attacks, Intrusions and Defenses (RAID 2020)},
+  year={2020},
+  pages={459--474},
+  publisher={USENIX Association},
+  url={https://www.usenix.org/conference/raid2020/presentation/demarinis}
+}
+
+@inproceedings{ghavamnia2020temporal,
+  title={Temporal System Call Specialization for Attack Surface Reduction},
+  author={Ghavamnia, Seyedhamed and Palit, Tapti and Mishra, Shachee and Polychronakis, Michalis},
+  booktitle={29th USENIX Security Symposium (USENIX Security 20)},
+  year={2020},
+  pages={1749--1766},
+  publisher={USENIX Association},
+  url={https://www.usenix.org/conference/usenixsecurity20/presentation/ghavamnia}
+}
+
+@article{pailoor2020abhaya,
+  title={Automated Policy Synthesis for System Call Sandboxing},
+  author={Pailoor, Shankara and Wang, Xinyu and Shacham, Hovav and Dillig, Isil},
+  journal={Proceedings of the ACM on Programming Languages},
+  volume={4},
+  number={OOPSLA},
+  pages={135:1--135:26},
+  year={2020},
+  publisher={ACM},
+  doi={10.1145/3428203}
+}
+
+@article{kang2026beacon,
+  title={BeaCon: Automatic container policy generation using environment-aware dynamic analysis},
+  author={Kang, Haney and Marin, Eduard and You, Myoungsung and Perino, Diego and Shin, Seungwon and Kim, Jinwoo},
+  journal={Computers \& Security},
+  volume={162},
+  pages={104789},
+  year={2026},
+  publisher={Elsevier},
+  doi={10.1016/j.cose.2025.104789}
+}
+
+@article{zhan2023sysverify,
+  title={Shrinking the Kernel Attack Surface Through Static and Dynamic Syscall Limitation},
+  author={Zhan, Dongyang and Yu, Zhaofeng and Yu, Xiangzhan and Zhang, Hongli and Ye, Lin},
+  journal={IEEE Transactions on Services Computing},
+  volume={16},
+  number={2},
+  pages={1431--1443},
+  year={2023},
+  publisher={IEEE},
+  doi={10.1109/TSC.2022.3173791}
+}
+
+@inproceedings{he2023crosscontainer,
+  title={Cross Container Attacks: The Bewildered {eBPF} on Clouds},
+  author={He, Yi and Guo, Roland and Xing, Yunlong and Che, Xijia and Sun, Kun and Liu, Zhuotao and Xu, Ke and Li, Qi},
+  booktitle={32nd USENIX Security Symposium (USENIX Security 23)},
+  year={2023},
+  pages={5971--5988},
+  publisher={USENIX Association},
+  url={https://www.usenix.org/conference/usenixsecurity23/presentation/he}
+}
+
+@inproceedings{jang2022secquant,
+  title={SecQuant: Quantifying Container System Call Exposure},
+  author={Jang, Sunwoo and Song, Somin and Tak, Byungchul and Suneja, Sahil and Le, Michael V. and Yue, Chuan and Williams, Dan},
+  booktitle={Computer Security -- ESORICS 2022, Part II},
+  year={2022},
+  pages={145--166},
+  publisher={Springer},
+  series={Lecture Notes in Computer Science},
+  volume={13555},
+  doi={10.1007/978-3-031-17145-1_8}
+}
+
+@inproceedings{reeves2021runtime,
+  title={Towards Improving Container Security by Preventing Runtime Escapes},
+  author={Reeves, Michael and Tian, Dave Jing and Bianchi, Antonio and Celik, Z. Berkay},
+  booktitle={2021 IEEE Secure Development Conference (SecDev)},
+  year={2021},
+  pages={38--46},
+  publisher={IEEE}
+}
+
+@inproceedings{deng2024conprov,
+  title={ConProv: A Container-Aware Provenance System for Attack Investigation},
+  author={Deng, Qiqing and Zhang, Yanqiang and Xu, Zhen and Tan, Qian and Zhang, Yan},
+  booktitle={40th Annual Computer Security Applications Conference (ACSAC 2024)},
+  year={2024},
+  pages={89--101},
+  publisher={IEEE},
+  doi={10.1109/ACSAC64157.2024.00017}
+}
+
+@inproceedings{le2023sysched,
+  title={Securing Container-based Clouds with Syscall-aware Scheduling},
+  author={Le, Michael V. and Ahmed, Salman and Williams, Dan and Jamjoom, Hani},
+  booktitle={Proceedings of the 2023 ACM Asia Conference on Computer and Communications Security (Asia CCS '23)},
+  year={2023},
+  pages={1--15},
+  publisher={ACM},
+  doi={10.1145/3579856.3582835}
+}
+
+@online{jajoo2025syscalls,
+  author = {Jajoo, Piyush},
+  title = {Syscalls in {Kubernetes}: The Invisible Layer That Runs Everything},
+  year = {2025},
+  url = {https://dev.to/piyushjajoo/syscalls-in-kubernetes-the-invisible-layer-that-runs-everything-3f1p},
+  urldate = {2026-05-30},
+  note = {Developer blog; explains how container workloads reach the host kernel only through syscalls}
 }
