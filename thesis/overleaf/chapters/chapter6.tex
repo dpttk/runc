@@ -32,7 +32,8 @@ Manual tuning and cluster recorders can, with sufficient effort, produce profile
 \begin{enumerate}
     \item \textbf{Single primary workload.} Generalisation to other web stacks requires a new scan and a new attack script per bundle.
     \item \textbf{Qualitative security metrics.} Table~\ref{tab:security-lab} reports succeed/block outcomes, not a normalised score across attack classes.
-    \item \textbf{Documented post-scan adjustments.} \texttt{REQUIRED\_CAPS} and \texttt{WRITABLE\_PATHS} mean the hardened run is not purely ``scan output only'' until file-capability merge is implemented.
+    \item \textbf{Documented post-scan adjustments.} \texttt{REQUIRED\_CAPS} and 
+    \allowbreak{} \texttt{WRITABLE\_PATHS} mean the hardened run is not purely ``scan output only'' until file-capability merge is implemented.
     \item \textbf{Out-of-scope escapes.} Runtime CVEs, \texttt{docker.sock} mounts, and privileged containers were not tested.
     \item \textbf{Analytical sandbox comparison.} Claims about gVisor and Kata rest on prior publications, not measurements executed for this thesis.
 \end{enumerate}

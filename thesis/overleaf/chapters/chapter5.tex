@@ -59,19 +59,21 @@ After scan-then-enforce, the same injection payloads used in the baseline run we
 
 \begin{table}[ht]
 \centering
-\caption{Post-exploitation containment: stock \texttt{runc} (baseline) vs.\ proposed runtime after scan-then-enforce.}
+\caption{Post-exploitation containment: stock \texttt{runc} (baseline) vs.\ proposed runtime after scan-then-enforce. Rows marked with $^{\dagger}$ required documented adjustments in laboratory \texttt{apply.sh} (file capability and writable path).}
 \label{tab:security-lab}
-\begin{tabularx}{\textwidth}{>{\raggedright\arraybackslash}p{2.4cm} >{\raggedright\arraybackslash}p{3.6cm} >{\centering\arraybackslash}p{1.5cm} >{\centering\arraybackslash}p{1.6cm}}
+\footnotesize
+\setlength{\tabcolsep}{4pt}
+\begin{tabularx}{\textwidth}{@{}>{\raggedright\arraybackslash}p{2.05cm} >{\raggedright\arraybackslash}X >{\centering\arraybackslash}p{1.05cm} >{\centering\arraybackslash}p{1.05cm}@{}}
 \toprule
-\textbf{Class} & \textbf{Example payload} & \textbf{Baseline} & \textbf{Hardened} \\
+\textbf{Class} & \textbf{Example payload} & \textbf{Base.} & \textbf{Hard.} \\
 \midrule
 Reconnaissance & \texttt{id; hostname; uname -a} & Succeeds & Blocked \\
 Sensitive read & \texttt{cat /etc/shadow} & Succeeds & Blocked \\
 Reverse shell & \texttt{bash -i >\& /dev/tcp/\ldots} & Succeeds & Blocked \\
 Mount probe & \texttt{mount -t proc proc /mnt} & Succeeds & Blocked \\
 Persistence & \texttt{chmod u+s /bin/bash} & Succeeds & Blocked \\
-Legitimate ping & \texttt{/diag/ping?host=127.0.0.1} & OK & OK (needs \texttt{CAP\_NET\_RAW} in apply) \\
-Calendar upload & \texttt{POST /calendar/upload} & OK & OK (writable path in apply) \\
+Legitimate ping & \texttt{/diag/ping?host=127.0.0.1} & OK & OK$^{\dagger}$ \\
+Calendar upload & \texttt{POST /calendar/upload} & OK & OK$^{\dagger}$ \\
 \bottomrule
 \end{tabularx}
 \end{table}
