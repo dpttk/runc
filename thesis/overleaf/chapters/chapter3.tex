@@ -33,7 +33,7 @@ Requirements R1 and R4 shape the user-facing side of the scanner; R2 and R3 shap
 
 \section{Threat Model and Scope}\label{sec:design-threat}
 
-The threat model assumes a co-tenant workload or a compromised in-container process that tries to perform one of the following actions.
+The threat model assumes a co-tenant or compromised in-container process attempting one of these actions.
 
 \begin{itemize}
     \item \emph{Kernel-surface escalation via syscall.} The attacker calls a syscall that the legitimate workload never uses --- for example \texttt{ptrace}, \texttt{kexec\_load}, \texttt{init\_module}, \texttt{keyctl}, or a container-relevant variant of \texttt{unshare} --- to gain kernel-side privileges or to move laterally to a neighbouring container.
@@ -87,8 +87,8 @@ Every container action---opening a file, binding a port, spawning a shell---even
 }
 
 \vspace{0.4em}
-{\footnotesize
-\setlength{\tabcolsep}{3pt}
+\resizebox{\textwidth}{!}{%
+\footnotesize\setlength{\tabcolsep}{3pt}%
 \begin{tabular}{@{}lcccccc@{}}
 \toprule
 \textbf{Mechanism} & \textbf{Def.\ \texttt{runc}} & \textbf{Scan} & \textbf{Enforce} & \textbf{Manual} & \textbf{Recorder} & \textbf{Sandbox} \\
@@ -112,23 +112,7 @@ The scanning pipeline has five phases. Figure~\ref{fig:arch} gives the high-leve
 
 \begin{figure}[H]
 \centering
-\begin{tikzpicture}[
-    node distance=0.55cm and 0.6cm,
-    phase/.style={rectangle, draw, rounded corners=2pt, minimum width=3.1cm, minimum height=1.15cm, align=center, font=\small},
-    arrow/.style={-Stealth, thick},
-    every node/.style={font=\small}
-]
-    \node[phase] (relax) {1.~Spec\\relaxation};
-    \node[phase, right=of relax] (hooks) {2.~Hook\\installation};
-    \node[phase, right=of hooks] (run) {3.~Container\\execution};
-    \node[phase, right=of run] (stop) {4.~Tracer\\shutdown};
-    \node[phase, right=of stop] (final) {5.~Finalisation};
-    \draw[arrow] (relax) -- (hooks);
-    \draw[arrow] (hooks) -- (run);
-    \draw[arrow] (run) -- (stop);
-    \draw[arrow] (stop) -- (final);
-    \node[draw, dashed, fit=(relax)(hooks)(run)(stop)(final), inner sep=8pt, label={[font=\small\itshape]below:proposed runtime, single \texttt{runc run -{}-security-scan} invocation}] {};
-\end{tikzpicture}
+\includegraphics[width=0.92\textwidth]{fig3_2_picril.png}
 \caption{High-level phases of the scanning pipeline.}
 \label{fig:arch}
 \end{figure}
@@ -139,12 +123,13 @@ The scanning pipeline has five phases. Figure~\ref{fig:arch} gives the high-leve
 
 \textbf{Phase 3. Container execution.} The container runs normally with the relaxed spec and the installed hooks. The seccomp BPF hook writes \texttt{generated/seccomp.json}; the capability tracer writes \texttt{generated/capable-bpfcc.log}; AppArmor denials are recorded through \texttt{auditd} and the standard syslog path; the poststart snapshot hook captures \texttt{/proc/<init>/status} for diagnostics. The workload does not know it is being observed.
 
-\textbf{Phase 4. Tracer shutdown.} The poststop \texttt{scan-cap-trace-stop} hook is prepended so that it runs before any user-defined or AppArmor-unload hook. It sends \texttt{SIGTERM} to the tracer, waits up to two seconds for the in-kernel ring buffer to flush, and falls back to \texttt{SIGKILL} if needed. The per-container BPF map is unpinned from the BPF filesystem. The hook also acts as a barrier: by the time finalisation runs, every tracer has closed its log.
+\textbf{Phase 4. Tracer shutdown.} The poststop \texttt{scan-cap-trace-stop} hook is prepended so that it runs before any user-defined or AppArmor-unload hook. It sends \texttt{SIGTERM} to the tracer, waits up to two seconds for the in-kernel ring buffer to flush, and falls back to \texttt{SIGKILL} if needed. The per-container BPF map is unpinned from the BPF filesystem. The AppArmor unload hook then collects audit records for the generated profile from \texttt{journalctl -k} or, if necessary, \texttt{dmesg}, and appends the learned rules to \texttt{generated/apparmor.profile}. The hooks together act as a barrier: by the time finalisation runs, the capability tracer has closed its log and the AppArmor profile contains the rules observed during the container lifetime.
 
 \textbf{Phase 5. Finalisation.} The finalisation step parses the capability trace, normalises every capability name through a single helper so that OCI casing is preserved, and replaces \texttt{Process.Capabilities} in the on-disk \texttt{config.json} with the observed set. The seccomp and AppArmor profiles stay on disk under \texttt{generated/}; the developer wires them into the spec when convenient. An empty trace produces an empty capability set, not an unchanged one, because an empty trace means the workload used no capability and the strict reading of that evidence is the safest one.
 
 \begin{figure}[H]
 \centering
+\resizebox{0.98\textwidth}{!}{%
 \begin{tikzpicture}[
     node distance=0.55cm and 0.75cm,
     runtime/.style={rectangle, draw, rounded corners=2pt, minimum width=3.2cm, minimum height=0.9cm, align=center, fill=gray!10, font=\small},
@@ -174,7 +159,8 @@ The scanning pipeline has five phases. Figure~\ref{fig:arch} gives the high-leve
     \draw[arrow] (aap.south) -- ++(0,-0.25) -| (finalize.north west);
     \draw[arrow] (secp) -- (finalize);
     \draw[arrow] (capp.south) -- ++(0,-0.25) -| (finalize.north east);
-\end{tikzpicture}
+\end{tikzpicture}%
+}
 \caption{Data-flow view: the runtime orchestrates three independent tracers, and a single finalisation step consumes their artefacts.}
 \label{fig:flow}
 \end{figure}
@@ -192,9 +178,10 @@ Table~\ref{tab:artefacts} lists the artefacts written to \texttt{<bundle>/genera
 \texttt{seccomp.json} & seccomp hook & OCI-format allow-list used by enforcement runs \\
 \texttt{capable-bpfcc.log} & capability tracer & Raw cgroup-wide trace, parsed by finalisation \\
 \texttt{capabilities-from-proc-status.txt} & snapshot hook & Kernel-granted capability set; kept only as diagnostics \\
-\texttt{apparmor.profile} & AppArmor pipeline & Complain-mode profile; refined off-line by \texttt{aa-logprof} \\
+\texttt{apparmor.profile} & AppArmor pipeline & Complain-mode stub plus audit-collected rules; flipped to enforce when rules exist \\
 \texttt{apparmor-load.log} & AppArmor hook & \texttt{apparmor\_parser} stdout/stderr for post-mortem \\
 \texttt{spec.original.json} & finalisation & Pre-scan \texttt{config.json}, enables rollback \\
+\texttt{.runc\_cap\_trace.pid}, \texttt{.runc\_aa\_started\_at} & internal hooks & Runtime state for tracer shutdown and AppArmor audit-window filtering \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -217,7 +204,7 @@ The pipeline refuses to run on cgroup-v1 or hybrid hosts and on hosts where \tex
 
 \section{Seccomp Sub-Pipeline}\label{sec:design-seccomp}
 
-Seccomp recording is delegated to the OCI seccomp BPF hook, the same prestart hook Podman uses for its trace mode~\cite{ociseccompbpfhook}. This choice satisfies requirement R4: instead of re-implementing syscall tracing, the runtime reuses a maintained, widely deployed tool whose contract is a single OCI annotation. The runtime sets the annotation \texttt{io.containers.trace-syscall} to \texttt{of:<bundle>/generated/seccomp.json}, appends the hook to the prestart list with the \texttt{-s} flag, and lets the hook do the rest. When a previous annotation already exists, it is overwritten and the original value is logged as a warning; the original spec is preserved under \texttt{generated/spec.original.json}.
+Seccomp recording is delegated to the OCI seccomp BPF hook, the same prestart hook Podman uses for its trace mode~\cite{ociseccompbpfhook}. This choice satisfies requirement R4: instead of re-implementing syscall tracing, the runtime reuses a maintained, widely deployed tool whose contract is a single OCI annotation. The runtime sets \texttt{io.containers.trace-syscall} to point at \path{generated/seccomp.json}, appends the hook to the prestart list with the \texttt{-s} flag, and lets the hook do the rest. When a previous annotation already exists, it is overwritten and the original value is logged as a warning; the original spec is preserved under \texttt{generated/spec.original.json}.
 
 The pipeline does \emph{not} try to merge the generated profile with an existing seccomp profile in the spec. This is intentional: the scanning mode strips the seccomp profile in memory so that the trace can see syscalls the original profile would have masked, and merging the two on the way out would silently put the masked syscalls back into the generated allow-list. The generated profile is the ground truth for the workload at the time of the scan; reconciling it with any site-wide policy at enforcement time is the operator's job.
 
@@ -231,7 +218,7 @@ AppArmor learns through a complain-mode profile, so that denials are logged thro
     \item a \texttt{poststop} hook calls \texttt{apparmor\_parser -R} to unload the profile, so that repeated scans do not leave stale profiles in the kernel.
 \end{itemize}
 
-If AppArmor is disabled on the host, the profile file is still written for reference (so that an off-line refinement workflow remains possible), but the hooks are not installed and an informational message is logged. Refining the generated complain-mode profile into an enforceable one is left to \texttt{aa-logprof} on the host: the refinement is interactive and is the operator's responsibility, but the runtime documents the workflow in a generated \texttt{apparmor-README.txt} that ships alongside the profile.
+On unload, the runtime reads kernel audit output, keeps only records for the generated profile and for the current scan window, accepts both denied and complain-mode allowed AppArmor events, and maps understood file and capability events into deterministic rules. Unsupported operations such as mount, signal, ptrace, or network events are kept as comments so that evidence is not lost. If AppArmor is disabled on the host, the profile file is still written for reference, but the hooks are not installed and an informational message is logged. The generated \texttt{apparmor-README.txt} still documents the operator workflow and optional \texttt{aa-logprof} review, but the runtime now performs the basic audit-to-rule conversion automatically.
 
 \section{Self-Exec Hook Design}\label{sec:design-selfexec}
 

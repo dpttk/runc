@@ -5,7 +5,7 @@ This chapter reports the experimental evaluation of the proposed runtime. It ins
 
 \section{Experimental Setup}\label{sec:exp-setup}
 
-\textbf{Host and binaries.} The security laboratory runs on Ubuntu~24.04 with cgroup~v2 and AppArmor enabled. It builds two runtime binaries---upstream \texttt{runc-stock} and the proposed \texttt{runc-hardened}---and packages a single OCI bundle with an intentionally vulnerable Flask workload (system monitor plus calendar). Command injection in \texttt{/diag/ping} and \texttt{/diag/dns} is retained on purpose: the experiment does not measure whether remote code execution is possible, but what an attacker can do \emph{after} reaching shell execution inside the container.
+\textbf{Host and binaries.} The security laboratory runs on Ubuntu~24.04 with cgroup~v2 and AppArmor enabled. It builds two runtime binaries---upstream \texttt{runc-stock} and the proposed \texttt{runc-hardened}---and packages a single OCI bundle with an intentionally vulnerable Flask workload (system monitor plus calendar). Command injection in \texttt{/diag/ping} and \texttt{/diag/dns} is retained on purpose: the experiment does not measure whether the application bug exists, but what an attacker can do after reaching command execution through the vulnerable endpoint.
 
 \textbf{Protocol.} The reproducible workflow is:
 \begin{enumerate}
@@ -33,21 +33,21 @@ Table~\ref{tab:profquality-lab} summarises the artefact families. Three profile-
 
 \begin{itemize}
     \item \textbf{Seccomp.} The allow-list covered syscalls exercised by the Flask process, subprocess invocations (\texttt{ping}, \texttt{nslookup}), and file I/O on application paths.
-    \item \textbf{AppArmor.} Initial enforcement missed writable paths such as \texttt{/var/lib/sysmon-cal} because the audit collector matched only \texttt{apparmor=DENIED}, while complain mode logs would-be denials as \texttt{apparmor=ALLOWED}. The runtime collector was updated to accept both forms; unit tests now cover calendar upload writes.
-    \item \textbf{Capabilities.} The \texttt{capable-bpfcc} trace did not record \texttt{CAP\_NET\_RAW} required by \texttt{/usr/bin/ping} when the capability is carried as a \emph{file capability} (\texttt{security.capability} xattr) rather than through \texttt{cap\_capable} events. Until the runtime merges file capabilities from executed binaries, the laboratory documents an explicit post-scan adjustment (\texttt{REQUIRED\_CAPS=CAP\_NET\_RAW}) in \texttt{apply.sh}.
+    \item \textbf{AppArmor.} The implemented collector treats both \texttt{apparmor=DENIED} and \texttt{apparmor=ALLOWED} records as learning evidence, because complain mode reports would-be denials through both forms. On the laboratory workload this produced writable rules for \path{/var/lib/sysmon-cal} and preserved calendar uploads after enforcement.
+    \item \textbf{Capabilities.} The \texttt{capable-bpfcc} trace did not record \texttt{CAP\_NET\_RAW} required by \path{/usr/bin/ping} when the capability is carried as a \emph{file capability} (\texttt{security.capability} xattr) rather than through \texttt{cap\_capable} events. Until the runtime merges file capabilities from executed binaries, the laboratory documents an explicit post-scan adjustment (\texttt{REQUIRED\_\allowbreak CAPS=CAP\_\allowbreak NET\_\allowbreak RAW}) in \texttt{apply.sh}.
 \end{itemize}
 
 \begin{table}[ht]
 \centering
-\caption{Profile artefacts produced by \texttt{--security-scan} on the runtime-security lab workload.}
+\caption[Profile artefacts produced by scan.]{Profile artefacts produced by \texttt{--security-scan} on the runtime-security lab workload.}
 \label{tab:profquality-lab}
 \begin{tabularx}{\textwidth}{>{\raggedright\arraybackslash}p{4.2cm} X}
 \toprule
 \textbf{Artefact} & \textbf{Role} \\
 \midrule
-\texttt{generated/seccomp.json} & Deny-by-default syscall allow-list (\texttt{oci-seccomp-bpf-hook}) \\
-\texttt{generated/apparmor.profile} & MAC rules from complain-mode audit \\
-\texttt{generated/capable-bpfcc.log} & Observed \texttt{cap\_capable} events (cgroup-wide) \\
+\texttt{generated/}\\\texttt{seccomp.json} & Deny-by-default syscall allow-list (\texttt{oci-seccomp-bpf-hook}) \\
+\texttt{generated/}\\\texttt{apparmor.profile} & MAC rules from complain-mode audit \\
+\texttt{generated/}\\\texttt{capable-bpfcc.log} & Observed \texttt{cap\_capable} events (cgroup-wide) \\
 \texttt{config.json} (post-finalise) & Narrowed \texttt{process.capabilities}, embedded seccomp \\
 \bottomrule
 \end{tabularx}
@@ -61,9 +61,9 @@ After scan-then-enforce, the same injection payloads used in the baseline run we
 \centering
 \caption{Post-exploitation containment: stock \texttt{runc} (baseline) vs.\ proposed runtime after scan-then-enforce. Rows marked with $^{\dagger}$ required documented adjustments in laboratory \texttt{apply.sh} (file capability and writable path).}
 \label{tab:security-lab}
-\footnotesize
-\setlength{\tabcolsep}{4pt}
-\begin{tabularx}{\textwidth}{@{}>{\raggedright\arraybackslash}p{2.05cm} >{\raggedright\arraybackslash}X >{\centering\arraybackslash}p{1.05cm} >{\centering\arraybackslash}p{1.05cm}@{}}
+\scriptsize
+\setlength{\tabcolsep}{3pt}
+\begin{tabularx}{\textwidth}{@{}>{\raggedright\arraybackslash}p{2.0cm} >{\raggedright\arraybackslash}X >{\centering\arraybackslash}p{1.25cm} >{\centering\arraybackslash}p{1.25cm}@{}}
 \toprule
 \textbf{Class} & \textbf{Example payload} & \textbf{Base.} & \textbf{Hard.} \\
 \midrule
@@ -87,8 +87,8 @@ The laboratory run surfaced limitations that are part of the evaluation, not one
 \begin{itemize}
     \item \textbf{Scan coverage.} Profiles reflect only paths exercised during the scan window; cron jobs, error handlers, and certificate rotation are absent unless driven explicitly.
     \item \textbf{File capabilities.} \texttt{ping} illustrates privileges embedded in binaries rather than observed through \texttt{cap\_capable}; operators must merge these manually until the scanner does.
-    \item \textbf{AppArmor complain mode.} Learning depends on complete audit parsing; mixed \texttt{ALLOWED}/\texttt{DENIED} records must both be collected.
-    \item \textbf{Enforcement is not scan-only.} \texttt{apply.sh} workarounds (\texttt{REQUIRED\_CAPS}, \texttt{WRITABLE\_PATHS}) mean the hardened run documents honest operator steps rather than claiming fully automatic enforcement without review.
+    \item \textbf{AppArmor complain mode.} Learning depends on complete audit parsing; the implemented collector consumes both \texttt{ALLOWED} and \texttt{DENIED} records.
+    \item \textbf{Enforcement is not scan-only.} Operator overrides in \texttt{apply.sh} mean the hardened run documents honest review steps rather than claiming fully automatic enforcement without review.
 \end{itemize}
 
 \subsection{Analytical evaluation}\label{sec:exp-analytical}
@@ -142,8 +142,8 @@ CI-side recorder & SPO~\cite{spo2025}, Inspektor Gadget~\cite{inspektorgadget202
 \end{tikzpicture}%
 }
 \vspace{0.4em}
-{\footnotesize
-\setlength{\tabcolsep}{3pt}
+\resizebox{\textwidth}{!}{%
+\footnotesize\setlength{\tabcolsep}{3pt}%
 \begin{tabular}{@{}lcccccc@{}}
 \toprule
 \textbf{Mechanism} & \textbf{Def.\ \texttt{runc}} & \textbf{Scan} & \textbf{Enforce} & \textbf{Manual} & \textbf{Recorder} & \textbf{Sandbox} \\

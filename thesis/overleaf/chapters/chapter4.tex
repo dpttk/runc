@@ -1,241 +1,192 @@
 
 \chapter{Implementation}\label{ch:impl}
 
-This chapter reports how the design presented in Chapter~\ref{ch:design} is realised in the proposed runtime fork. The purpose is to make the artefact concrete: to show how the five-phase pipeline of Section~\ref{sec:design-overview} is implemented, how the three mechanism-specific sub-pipelines map to source-tree changes, and how correctness is defended through unit and integration tests. Experimental setup and measured outcomes are reported in Chapter~\ref{ch:experiments}; their interpretation is discussed in Chapter~\ref{ch:discussion}.
+This chapter describes the implemented runtime fork rather than the abstract design. The code base is a fork of \texttt{opencontainers/runc}; fork-specific runtime code lives in \texttt{src/}, while the upstream library layout is otherwise preserved. The implementation goal is deliberately narrow: keep normal \texttt{runc} behaviour unchanged unless the operator opts into a hardened capability default or runs the one-shot scanner.
 
-Section~\ref{sec:impl-overview} gives an overview of the implemented prototype and introduces the call-flow diagram that ties the runtime entry points to the scanner components. Section~\ref{sec:impl-tree} documents the changes the proposed runtime makes to the upstream source tree. Section~\ref{sec:impl-caps} describes the new default capability set and the override flags that keep backwards compatibility. Section~\ref{sec:impl-flags} lists the scanner CLI surface and the bundle layout the scanner produces on disk. Section~\ref{sec:impl-subcmd} details the five sub-commands that carry out the scanner's hooks. Section~\ref{sec:impl-cap-trace} covers the cgroup-wide capability trace and its host-side preconditions. Section~\ref{sec:impl-final} describes the finalisation step. Section~\ref{sec:impl-tests} covers the in-repository test strategy.
+Section~\ref{sec:impl-entry} explains where the scanner is attached to upstream \texttt{runc}. Section~\ref{sec:impl-layout} maps the new files to responsibilities. Sections~\ref{sec:impl-caps}--\ref{sec:impl-aa} describe the three generated mechanisms. Sections~\ref{sec:impl-final} and~\ref{sec:impl-apply} cover finalisation and subsequent enforcement runs. Section~\ref{sec:impl-tests} summarises the test strategy and current implementation limits.
 
-\section{Implementation Overview}\label{sec:impl-overview}
+\section{Runtime Entry Points}\label{sec:impl-entry}
 
-The implementation is a fork of the upstream \texttt{runc} reference runtime, published at \url{https://github.com/dpttk/runc}. The evaluation laboratory that drives scan-then-enforce against a vulnerable web workload lives in a separate repository, \url{https://github.com/dpttk/runc-hardened-test}. The fork keeps the upstream layout intact and adds a small number of new files at the repository root. The entry point of the scanner is plugged into the normal \texttt{runc run} and \texttt{runc create} code paths, so that the scanner is never reached for invocations that do not set the \texttt{-{}-security-scan} flag. When the flag is set, the runtime performs the five-phase pipeline of Section~\ref{sec:design-overview}: in-memory spec relaxation, hook installation, normal container execution, tracer shutdown, and on-disk finalisation.
+The scanner is reached only through \texttt{runc run -{}-security-scan}. The flag is registered in \texttt{src/run.go}; \texttt{runc create} intentionally exposes only the capability-default flags, because the scanner needs a complete container lifetime and a successful exit before it can finalise profiles. This distinction matters: a created-but-not-started container cannot produce syscall, capability, or AppArmor evidence.
 
-Figure~\ref{fig:callflow} shows the high-level call flow. The control path through the runtime is unchanged on the upstream side: \texttt{run.go} parses flags, \texttt{create.go} materialises the container, and \texttt{utils\_linux.go} drives the hook lifecycle. The scanner adds three extension points to this flow: a relaxation-and-hook-installation step at spec load time, a set of hook sub-commands that run inside the runtime binary during the container lifecycle, and a finalisation step that runs after the container exits.
+The main integration point is \texttt{startContainer} in \texttt{src/utils\_linux.go}. After the OCI spec is loaded, the fork first resolves optional capability-default flags and rewrites the five OCI capability buckets when requested. The rest of the path then splits on the scan flag:
+
+\begin{enumerate}
+    \item with \texttt{-{}-security-scan}, \texttt{applySecurityScan} relaxes the in-memory spec, creates \texttt{generated/}, and installs the tracing hooks used during this one container run;
+    \item without \texttt{-{}-security-scan}, \texttt{ensureGeneratedProfiles} performs only the apply step needed for a later enforcement run: it loads the previously generated AppArmor profile when the current \texttt{config.json} references one.
+\end{enumerate}
+
+Both branches then rejoin at the normal container execution path. For \texttt{runc run}, this is the same libcontainer-backed run path used by upstream \texttt{runc}; the fork does not replace the container runner. After the container finishes successfully, \texttt{startContainer} calls \texttt{finalizeSecurityScan}; its guard performs work only for a scan-mode \texttt{run} action (\texttt{CT\_\allowbreak ACT\_\allowbreak RUN}). Failed container starts do not overwrite \texttt{config.json}; a partial trace is not treated as trustworthy evidence. Finalisation errors are logged as scanner warnings, while the process still returns the container's exit status.
+
+Figure~\ref{fig:impl-callflow} shows the implemented control flow.
 
 \begin{figure}[H]
 \centering
-\resizebox{0.95\textwidth}{!}{%
-\begin{tikzpicture}[
-    node distance=0.4cm and 0.5cm,
-    entry/.style={rectangle, draw, rounded corners=2pt, minimum width=2.6cm, minimum height=0.8cm, align=center, fill=gray!10, font=\small},
-    comp/.style={rectangle, draw, rounded corners=2pt, minimum width=2.8cm, minimum height=0.8cm, align=center, font=\small},
-    hook/.style={rectangle, draw, rounded corners=2pt, minimum width=2.5cm, minimum height=0.7cm, align=center, font=\footnotesize},
-    artefact/.style={cylinder, shape border rotate=90, aspect=0.25, draw, minimum width=2.2cm, minimum height=0.75cm, align=center, font=\footnotesize},
-    arrow/.style={-Stealth, thick},
-    dashedarrow/.style={-Stealth, thick, dashed}
-]
-    \node[entry] (run) {\texttt{runc run}};
-    \node[entry, right=of run] (create) {\texttt{runc create}};
-    \node[comp, below=0.65cm of run] (scanner) {\texttt{scanner\_linux.go}};
-    \node[comp, below=0.65cm of create] (final) {\texttt{scanner\_finalize}};
-    \node[comp, below=0.55cm of scanner] (defaults) {\texttt{utils\_linux.go}};
-
-    \node[hook, below=0.9cm of defaults] (aaload) {\texttt{scan-aa-load}};
-    \node[hook, right=0.1cm of aaload] (capstart) {\texttt{scan-cap-trace-start}};
-    \node[hook, right=0.1cm of capstart] (snap) {\texttt{scan-cap-snapshot}};
-    \node[hook, below=0.2cm of aaload] (capstop) {\texttt{scan-cap-trace-stop}};
-    \node[hook, right=0.1cm of capstop] (aaunload) {\texttt{scan-aa-unload}};
-
-    \node[artefact, below=0.65cm of capstop] (log) {\texttt{capable-bpfcc.log}};
-    \node[artefact, right=0.2cm of log] (sec) {\texttt{seccomp.json}};
-    \node[artefact, right=0.2cm of sec] (aa) {\texttt{apparmor.profile}};
-
-    \draw[arrow] (run) -- (scanner);
-    \draw[arrow] (create) -- (scanner);
-    \draw[arrow] (defaults) -- (scanner);
-    \draw[arrow] (scanner) -- (final);
-    \draw[dashedarrow] (scanner.south) |- (aaload.north);
-    \draw[dashedarrow] (scanner.south) |- (capstart.north);
-    \draw[dashedarrow] (scanner.south) |- (snap.north);
-    \draw[dashedarrow] (capstop.north) -- (scanner.south);
-    \draw[dashedarrow] (aaunload.north) -- (scanner.south);
-    \draw[arrow] (capstart) -- (log);
-    \draw[arrow] (capstop) -- (log);
-    \draw[arrow] (aaload) -- (aa);
-    \draw[arrow] (scanner.east) -| (sec.north);
-    \draw[arrow] (log.south) -- ++(0,-0.2) -| (final.south);
-\end{tikzpicture}%
-}
-\caption{Call-flow view of the proposed runtime. Solid arrows show direct function calls; dashed arrows show OCI hooks whose \texttt{Path} points back at the runtime binary.}
-\label{fig:callflow}
+\includegraphics[width=0.82\textwidth]{figs/impl-callflow.png}
+\caption{\texttt{runc run} control flow in \texttt{startContainer}. Scan mode generates evidence and finalises it after a successful container run; a normal run only applies previously generated AppArmor state before starting the container.}
+\label{fig:impl-callflow}
 \end{figure}
 
-The same figure makes the role of each hook concrete: the AppArmor sub-pipeline runs between \texttt{scan-aa-load} (createRuntime) and \texttt{scan-aa-unload} (poststop), the capability sub-pipeline runs between \texttt{scan-cap-trace-start} (poststart) and \texttt{scan-cap-trace-stop} (poststop, prepended), and the snapshot sub-command runs once after the container starts to capture \texttt{/proc/<init>/status} for diagnostics. The seccomp sub-pipeline is invoked through an upstream prestart hook that the scanner installs; its output is written by the hook itself, without a dedicated sub-command.
+\section{Source-Tree Layout}\label{sec:impl-layout}
 
-\section{Source-Tree Changes}\label{sec:impl-tree}
-
-The new code is organised into four Go files at the repository root, with table-driven unit tests next to each. The files and their responsibilities are listed in Table~\ref{tab:sourcechanges}.
+The fork keeps scanner logic in a small set of Linux-only files. Table~\ref{tab:impl-files} lists the files that are specific to the thesis implementation.
 
 \begin{table}[ht]
 \centering
-\caption{Files added or modified by the proposed runtime.}
-\label{tab:sourcechanges}
-\begin{tabular}{p{4.8cm}p{9.4cm}}
+\caption{Implementation files added or modified by the fork.}
+\label{tab:impl-files}
+\footnotesize
+\begin{tabularx}{\textwidth}{>{\raggedright\arraybackslash}p{5.9cm} X}
 \toprule
 \textbf{File} & \textbf{Responsibility} \\
 \midrule
-\texttt{scanner\_linux.go} & Entry point of the scanning mode: loads the spec, relaxes it in memory, grants all capabilities, installs hooks, calls into the finalisation step after the container exits. \\
-\texttt{scanner\_hooks\_linux.go} & Implementation of the five sub-commands (\texttt{scan-aa-load}, \texttt{scan-aa-unload}, \texttt{scan-cap-snapshot}, \texttt{scan-cap-trace-start}, \texttt{scan-cap-trace-stop}). \\
-\texttt{scanner\_bpf\_linux.go} & cgroup-v2 resolution, BPF-map creation and pinning through \texttt{bpftool}, feature detection for \texttt{capable-bpfcc}. \\
-\texttt{scanner\_finalize\_linux.go} & Parser for the capability log and the narrowing step on the on-disk \texttt{config.json}. \\
-\texttt{scanner\_*\_test.go} & Table-driven unit tests for each of the four files above. \\
-\texttt{run.go}, \texttt{create.go} & CLI flag registration (\texttt{-{}-security-scan}, \texttt{-{}-default-capabilities}, \texttt{-{}-default-capabilities-docker}, \texttt{-{}-scan-capable}, \texttt{-{}-scan-bpftool}, \texttt{-{}-scan-seccomp-hook}). \\
-\texttt{libcontainer/specconv/example.go} & New default capability template (empty set). \\
-\texttt{utils\_linux.go} & Override logic for capability defaults and the entry point into the finalisation step. \\
+\texttt{src/scanner\_linux.go} & Scanner orchestration: in-memory relaxation, hook installation, tool discovery, AppArmor profile stub generation. \\
+\texttt{src/scanner\_hooks\_linux.go} & Hidden self-exec hook sub-commands for AppArmor load/unload, capability snapshot, and capability tracer start/stop. \\
+\texttt{src/scanner\_bpf\_linux.go} & cgroup-v2 resolution, bpffs precondition checks, and \texttt{bpftool} map create/update/teardown. \\
+\texttt{src/scanner\_apparmor\_linux.go} & AppArmor audit parsing and rule synthesis from \texttt{ALLOWED}/\texttt{DENIED} kernel records. \\
+\texttt{src/scanner\_finalize\_linux.go} & One-time spec backup and finalisation of capabilities, seccomp, and AppArmor into \texttt{config.json}. \\
+\texttt{src/scanner\_apply\_linux.go} & Auto-load generated AppArmor profiles on later non-scan \texttt{runc run} invocations. \\
+\texttt{src/run.go}, \texttt{src/create.go} & CLI flag registration. Only \texttt{run} exposes \texttt{-{}-security-scan}; both expose capability preset flags. \\
+\texttt{src/utils\_linux.go} & Capability preset selection, \texttt{startContainer} wiring, and finalisation call site. \\
+\texttt{libcontainer/specconv/example.go} & New \texttt{runc spec} template with an empty default capability set. \\
+\texttt{tests/integration/}\\\texttt{security\_scan.bats}, \texttt{contrib/runc-}\\\texttt{security-scan-stub-*} & Root-only integration smoke tests and stub tracing tools. \\
 \bottomrule
-\end{tabular}
+\end{tabularx}
 \end{table}
 
-The upstream \texttt{runc} source-tree layout is otherwise left alone. The scanner files are compiled only on Linux (\texttt{\_linux.go} suffix) so that non-Linux builds of \texttt{runc} still compile without the scanner. Flag registration in \texttt{run.go} and \texttt{create.go} is additive: if the operator does not pass any of the scanner flags, the only code the runtime executes at spec-load time is the new capability-default helper, which reduces to a single \texttt{switch} on a string that is empty in the unflagged case.
+The implementation uses build tags indirectly through file names: scanner files end in \texttt{\_linux.go}, matching the Linux-only nature of seccomp, capabilities, AppArmor, cgroups, and BPF. Non-scan invocations pay only for capability preset resolution and, when a generated AppArmor profile is already referenced by the spec, a best-effort load check.
 
-\section{Capability Defaults and Override Logic}\label{sec:impl-caps}
+\section{Capability Defaults}\label{sec:impl-caps}
 
-The default \texttt{runc spec} template now emits an empty \texttt{capabilities} object. The behavioural change is visible from the command line:
+The first change is independent of scan mode: \texttt{runc spec} now emits an empty capability set. The template in \texttt{libcontainer/specconv/example.go} initialises \texttt{Bounding}, \texttt{Permitted}, and \texttt{Effective} as empty arrays. This gives a new bundle the safest baseline and forces capability grants to be explicit.
 
-\begin{verbatim}
-$ runc spec
-$ jq '.process.capabilities' config.json
-{}
-\end{verbatim}
-
-Two flags restore the historical defaults. They are mutually exclusive:
+Two flags restore compatibility when needed:
 
 \begin{verbatim}
-runc run --default-capabilities          <id>   # 3 caps  (upstream)
-runc run --default-capabilities-docker   <id>   # 14 caps (Docker)
-runc run                                 <id>   # 0 caps  (new default)
+runc run --default-capabilities          <id>   # upstream runc, 3 caps
+runc run --default-capabilities-docker   <id>   # Docker-style, 14 caps
+runc run                                 <id>   # new default, 0 caps
 \end{verbatim}
 
-The override logic lives in \texttt{utils\_linux.go}. A helper returns one of three modes (empty, \texttt{runc}, \texttt{docker}) from the CLI context; passing both flags returns an error from the CLI parser rather than from the container start path, so the operator sees the problem before the spec is materialised. The override rewrites all five capability buckets (bounding, effective, permitted, inheritable, ambient) so that capabilities survive the \texttt{exec(2)} boundary consistently; writing only the bounding set would cause the effective set to lose capabilities on re-exec.
-
-The resulting capability masks for the three modes are summarised in Table~\ref{tab:capmodes}. The masks were recorded by decoding the \texttt{CapPrm} field of \texttt{/proc/<init>/status} after starting a container in each mode.
+The flags are mutually exclusive. \texttt{resolveCapabilitiesMode} returns an error if both are set, and \texttt{applyCapabilitiesOverride} writes the selected preset into all five OCI buckets: bounding, effective, permitted, inheritable, and ambient. Writing all buckets avoids an inconsistent state where a capability exists in the bounding set but disappears across \texttt{exec(2)} because it was not also effective or permitted.
 
 \begin{table}[ht]
 \centering
-\caption{Effective capability mask for the three default modes.}
-\label{tab:capmodes}
-\begin{tabular}{p{4.8cm}p{3.6cm}p{5.2cm}}
+\caption{Capability presets implemented by the fork.}
+\label{tab:impl-cap-presets}
+\begin{tabular}{p{4.0cm}p{10.0cm}}
 \toprule
-\textbf{Mode} & \textbf{CapPrm} & \textbf{Interpretation} \\
+\textbf{Mode} & \textbf{Capability set} \\
 \midrule
-Default (no flag) & \texttt{0x0000000000000000} & empty \\
-\texttt{-{}-default-capabilities} & \texttt{0x0000000020000420} & \texttt{CAP\_KILL}, \texttt{CAP\_NET\_BIND\_SERVICE}, \texttt{CAP\_AUDIT\_WRITE} \\
-\texttt{-{}-default-capabilities-docker} & \texttt{0x00000000a80425fb} & historical Docker fourteen-cap set \\
-Both flags & --- & CLI returns ``mutually exclusive'' error \\
+Default & Empty capability arrays in the generated spec. \\
+\texttt{-{}-default-capabilities} & \texttt{CAP\_AUDIT\_WRITE}, \texttt{CAP\_KILL}, \texttt{CAP\_NET\_BIND\_SERVICE}. \\
+\texttt{-{}-default-capabilities-docker} & Docker's historical fourteen-capability set, including \texttt{CAP\_CHOWN}, \texttt{CAP\_NET\_RAW}, \texttt{CAP\_SYS\_CHROOT}, and related basic container privileges. \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-\section{Scanner CLI and Bundle Layout}\label{sec:impl-flags}
+\section{Scan Setup and Spec Relaxation}\label{sec:impl-scan-setup}
 
-The scanner is opt-in. The entry point is a single flag; the remaining flags are override paths for the external tooling, useful on hosts that install \texttt{capable-bpfcc} or \texttt{bpftool} outside \texttt{PATH}.
+\texttt{applySecurityScan} begins by resolving the bundle directory and creating \texttt{generated/}. It then resolves the absolute path of the running \texttt{runc} binary with \texttt{os.Executable}; every internal hook uses that binary as \texttt{Hook.Path}. This is the implementation of the self-exec design: the OCI bundle receives hook entries, but no scanner script is written into the bundle.
 
-\begin{verbatim}
-runc run \
-  --security-scan \
-  [--scan-seccomp-hook PATH] \
-  [--scan-capable PATH] \
-  [--scan-bpftool PATH] \
-  <container-id>
-\end{verbatim}
+Before hooks are installed, the in-memory spec is relaxed. \texttt{relaxSpecForScan} clears \texttt{linux.seccomp}, clears \texttt{process.selinuxLabel}, and sets \texttt{process.noNewPrivileges} to \texttt{false}. SELinux is not generated by the thesis fork; clearing the label during scan only prevents an existing label from hiding behaviour that the scanners should observe. \texttt{grantAllCapsForScan} then grants every capability known to the running kernel in all five capability buckets. This broad grant is never persisted: it exists only in the spec passed to the container runner during the recording run.
 
-When \texttt{-{}-security-scan} is set, the bundle gains a single new directory next to the rootfs. No executable is ever written into the bundle; the scanner's own hooks are sub-commands of the runtime binary and the external tracing tools are invoked from inside those sub-commands. The produced tree is shown below:
+The scanner logs a warning when the workload runs as \texttt{uid 0}. The kernel skips many \texttt{cap\_capable} checks for root tasks, so a root scan under-reports capability use. The runtime does not rewrite the UID because doing so would break legitimate root workloads; the recommendation is documented as operator guidance instead.
 
-\begin{verbatim}
-<bundle>/generated/
-  seccomp.json                          # allow-list profile
-  capable-bpfcc.log                     # raw cgroup-wide cap trace
-  capabilities-from-proc-status.txt     # poststart /proc/<init>/status snapshot
-  apparmor.profile                      # complain-mode profile
-  apparmor-load.log                     # apparmor_parser stdout/stderr
-  apparmor-README.txt                   # how to refine via aa-logprof
-  spec.original.json                    # pre-scan config.json, kept for rollback
-\end{verbatim}
+\section{Seccomp Pipeline}\label{sec:impl-seccomp}
 
-The bundle layout is stable across scanner versions and is the contract checked by the integration smoke pack and by the external runtime-security laboratory described in Chapter~\ref{ch:experiments}.
+Seccomp recording is delegated to \texttt{oci-seccomp-bpf-hook}. The scanner looks for the hook in standard install paths or accepts an explicit \texttt{-{}-scan-seccomp-hook} path. The hook must be executable; otherwise scan mode fails before the container is started.
 
-\section{Self-Exec Hook Sub-Commands}\label{sec:impl-subcmd}
+The scanner writes the OCI annotation
+\begin{quote}
+\small\path{io.containers.trace-syscall=of:<bundle>/generated/seccomp.json}
+\end{quote}
+and appends a prestart hook with \texttt{-s}. The generated file is expected to be an OCI \texttt{LinuxSeccomp} object. During finalisation, \texttt{applyGeneratedSeccomp} parses \texttt{generated/seccomp.json} and embeds it into \texttt{spec.Linux.Seccomp}. Empty or malformed seccomp output is treated as a warning and skipped, because the run may have used a CI stub or failed before the external hook wrote a meaningful profile.
 
-Five hidden sub-commands are registered next to \texttt{run}, \texttt{create}, and \texttt{exec} in the CLI. Each accepts the OCI hook state JSON on stdin and reads its parameters from environment variables propagated through the OCI \texttt{Hook.Env} field. The sub-commands are summarised in Table~\ref{tab:subcmds}.
+The implementation deliberately does not merge with a pre-scan seccomp profile. The scanner cleared that profile in memory so the trace could see the workload's real syscall surface. Re-introducing the original policy by union would make the generated result less tied to observed behaviour.
 
-\begin{table}[ht]
-\centering
-\caption{Sub-commands registered by the proposed runtime.}
-\label{tab:subcmds}
-\begin{tabular}{p{3.8cm}p{2.5cm}p{7.8cm}}
-\toprule
-\textbf{Sub-command} & \textbf{Hook stage} & \textbf{Responsibility} \\
-\midrule
-\texttt{scan-aa-load} & \texttt{createRuntime} (prepended) & Calls \texttt{apparmor\_parser -r} on the generated profile; saves stdout/stderr to \texttt{generated/apparmor-load.log}. \\
-\texttt{scan-aa-unload} & \texttt{poststop} & Calls \texttt{apparmor\_parser -R} to remove the profile. \\
-\texttt{scan-cap-snapshot} & \texttt{poststart} & Reads \texttt{/proc/<init>/status}, saves the \texttt{Cap*} lines into \texttt{capabilities-from-proc-status.txt} for diagnostics. \\
-\texttt{scan-cap-trace-start} & \texttt{poststart} & Resolves the cgroup path and inode, creates a hash map under \texttt{/sys/fs/bpf/runc-scan/<id>/cgroup\_filter} via \texttt{bpftool map create}, fills it via \texttt{bpftool map update}, \texttt{Setpgid}-spawns \texttt{capable-bpfcc -{}-cgroupmap <map>}. Writes the tracer PID into \texttt{generated/.runc\_cap\_trace.pid}. \\
-\texttt{scan-cap-trace-stop} & \texttt{poststop} (prepended) & \texttt{SIGTERM}s the tracer, waits up to two seconds for the log to flush, escalates to \texttt{SIGKILL} if needed, removes the pin under \texttt{/sys/fs/bpf/runc-scan/<id>/}. \\
-\bottomrule
-\end{tabular}
-\end{table}
+\section{Capability Tracing Pipeline}\label{sec:impl-cap-trace}
 
-Three implementation points are worth recording. First, every sub-command drains stdin before returning, because the OCI runtime pipes the hook state JSON even to hooks that do not consume it, and failing to read it risks a \texttt{SIGPIPE} on the runtime side. Second, every sub-command writes its own log file under \texttt{generated/} so that a failure in one hook is diagnosable without the other hooks' output being interleaved in the same log. Third, the \texttt{scan-cap-trace-stop} sub-command is prepended to the poststop list so that it runs before any user-defined hook or the AppArmor unload hook; this ordering makes sure the in-kernel ring buffer is flushed before any hook that might disturb the cgroup state.
+Capability tracing uses BCC's \texttt{capable-bpfcc} with \texttt{-{}-cgroupmap}. A PID-only trace would miss children spawned after the tracer starts; the cgroup map instead matches every task in the container's cgroup. The scanner treats this as a hard requirement and refuses to run when the host cannot satisfy it.
 
-\section{cgroup-Wide Capability Trace}\label{sec:impl-cap-trace}
+The precondition check in \texttt{requireCapTraceTools} verifies:
 
-A host-side preconditions check runs before the scanner actually starts; it decides whether the scanner can run at all. The check inspects five invariants, listed in Table~\ref{tab:preconditions}.
+\begin{itemize}
+    \item \texttt{capable-bpfcc} exists and its help output contains \texttt{-{}-cgroupmap};
+    \item \texttt{bpftool} exists;
+    \item the host uses the unified cgroup-v2 hierarchy;
+    \item \path{/sys/fs/bpf} is mounted as bpffs, except in tests that set \texttt{RUNC\_\allowbreak SCAN\_\allowbreak PIN\_\allowbreak ROOT}.
+\end{itemize}
 
-\begin{table}[ht]
-\centering
-\caption{Host-side preconditions for the capability trace.}
-\label{tab:preconditions}
-\begin{tabular}{p{5.0cm}p{9.2cm}}
-\toprule
-\textbf{Precondition} & \textbf{Verification} \\
-\midrule
-\texttt{capable-bpfcc} available & On \texttt{PATH} or supplied via \texttt{-{}-scan-capable}. \\
-\texttt{capable-bpfcc -{}-cgroupmap} supported & Verified by parsing \texttt{capable-bpfcc -{}-help} output. \\
-\texttt{bpftool} available & On \texttt{PATH} or supplied via \texttt{-{}-scan-bpftool}. \\
-Unified cgroup-v2 hierarchy & Verified by reading \texttt{/proc/mounts}; hybrid hosts are rejected. \\
-\texttt{/sys/fs/bpf} is a \texttt{bpffs} mount & Verified by reading \texttt{/proc/mounts}; skipped under a test-only environment variable that redirects the pin root, so that integration smoke tests can run under a mocked bpffs. \\
-\bottomrule
-\end{tabular}
-\end{table}
+At poststart, \texttt{scan-cap-trace-start} reads the OCI hook state, resolves \path{/proc/<pid>/cgroup} to a cgroup-v2 path, obtains the cgroup id from the directory inode, creates a pinned hash map under \path{/sys/fs/bpf/runc-scan/<id>/cgroup_filter}, inserts the cgroup id, and starts \texttt{capable-bpfcc -{}-cgroupmap <map>}. The tracer PID is written to \texttt{generated/.runc\_cap\_trace.pid}; stdout and stderr go to \texttt{generated/capable-bpfcc.log}.
 
-If any precondition fails, scan mode refuses to run and returns an actionable error that names the missing tool or the failing check. There is no silent fallback to the PID-based tracing mode of \texttt{capable-bpfcc}, because that fallback would degrade child-process coverage and silently break requirement R2 from Chapter~\ref{ch:design}.
+At poststop, \texttt{scan-cap-trace-stop} sends \texttt{SIGTERM}, waits up to two seconds, escalates to \texttt{SIGKILL} if necessary, deletes the PID file, and removes the pinned map directory. The hook is prepended to the poststop list so the log is closed before finalisation reads it.
+
+\section{AppArmor Pipeline}\label{sec:impl-aa}
+
+AppArmor is generated in two stages. During scan setup, \texttt{buildAppArmorProfileSource} writes a stub profile named \texttt{runc\_scan\_<id>} to \texttt{generated/apparmor.profile}. The profile starts in complain mode with \texttt{attach\_disconnected} and \texttt{mediate\_deleted}, includes \texttt{abstractions/base}, \texttt{abstractions/nameservice}, and \texttt{abstractions/ssl\_certs}, and otherwise stays intentionally small so the audit log reveals what the workload actually touches.
+
+If AppArmor is enabled, a createRuntime hook \texttt{scan-aa-load} loads the profile through \texttt{apparmor\_parser -r} and records the load timestamp in \texttt{generated/.runc\_aa\_started\_at}. A poststop hook \texttt{scan-aa-unload} first collects audit records for that profile and then unloads it with \texttt{apparmor\_parser -R}. Parser failures are logged to \texttt{generated/apparmor-load.log} but are non-fatal, because missing AppArmor userspace tooling should not leave the container teardown path wedged.
+
+The audit collector in \texttt{src/scanner\_apparmor\_linux.go} reads \texttt{journalctl -k} and falls back to \texttt{dmesg}. It filters by profile name and scan time window, and it accepts both \texttt{apparmor=DENIED} and \texttt{apparmor=ALLOWED}. The second form is essential: in complain mode the kernel often logs would-be denials as \texttt{ALLOWED}. File operations are mapped to AppArmor path rules, capability operations to \texttt{capability NAME,} rules, and unsupported operations are preserved as comments. The resulting block is inserted between sentinel markers inside \texttt{apparmor.profile}; rerunning the scan replaces the block rather than appending duplicates.
+
+If the collector wrote at least one rule block, finalisation removes the \texttt{complain} flag from the profile header, turning the file into an enforce-mode profile. If no rules were collected, the profile remains in complain mode. This avoids turning an empty stub into a policy that would deny almost everything on the next run.
 
 \section{Finalisation}\label{sec:impl-final}
 
-The finalisation function is called from \texttt{utils\_linux.go} after the container exits. Its four responsibilities are:
+\texttt{finalizeSecurityScan} reconciles \texttt{config.json} with the three generated artefact families. It first copies the pre-scan spec to \texttt{generated/spec.original.json}; the backup is created only once so repeated scans do not erase the original rollback target.
+
+The finalisation step then performs three independent rewrites:
 
 \begin{enumerate}
-    \item parse \texttt{generated/capable-bpfcc.log}, extracting capability names from the kernel-emitted \texttt{cap\_capable} events;
-    \item normalise each observed name through a single helper that maps BCC's lower-case short names to OCI's upper-case \texttt{CAP\_*} form;
-    \item replace \texttt{Process.Capabilities.\{Bounding, Effective, Permitted, Inheritable, Ambient\}} on the \emph{on-disk} \texttt{config.json} with the observed set;
-    \item write the previous \texttt{config.json} verbatim to \texttt{generated/spec.original.json}, so that a later run can roll back the narrowing by copying the backup over the active spec.
+    \item \textbf{Capabilities.} \texttt{generated/capable-bpfcc.log} is parsed for \texttt{CAP\_*} names. The discovered set replaces all five OCI capability buckets. An empty log means an empty set, not the old set.
+    \item \textbf{Seccomp.} \texttt{generated/seccomp.json} is parsed as \texttt{LinuxSeccomp} and written into \texttt{linux.seccomp} when it contains a valid \texttt{defaultAction}.
+    \item \textbf{AppArmor.} The profile name is parsed from \texttt{generated/apparmor.profile} and written into \texttt{process.apparmorProfile}; if audit rules exist, the profile is flipped out of complain mode.
 \end{enumerate}
 
-The function is set-difference, not set-union: an empty trace produces an empty capability set, with an informational log line that names the log file that produced the empty result. This is the safe reading of the evidence, and it matches requirement R5 in Chapter~\ref{ch:design}: re-running the scanner never widens the eventual enforcement spec.
+The updated spec is written through a temporary file and \texttt{rename(2)}, so a crash during finalisation does not leave a half-written \texttt{config.json}. The semantics are replace-from-evidence rather than merge-with-history. This is the main safety invariant of the implementation: a scan cannot grant a capability merely because it used to appear in \texttt{config.json}; only observed capability names survive.
 
-\section{Tests}\label{sec:impl-tests}
+\section{Applying Generated Profiles}\label{sec:impl-apply}
 
-The correctness of the scanner is defended at two levels inside the runtime repository: unit tests and an integration smoke pack. Table~\ref{tab:tests} summarises both. A separate laboratory repository exercises the same scanner against a real kernel, real tooling, and a full web workload; that evaluation is reported in Chapter~\ref{ch:experiments}.
+After a successful scan, a later enforcement run is simply a normal \texttt{runc run} on the same bundle. Capabilities and seccomp need no special runtime path because finalisation already embedded them into \texttt{config.json}. AppArmor is different: \texttt{process.apparmorProfile} names a kernel policy, while \texttt{generated/apparmor.profile} is only a text file until loaded.
 
-\begin{table}[ht]
-\centering
-\caption{In-repository test suites that exercise the proposed runtime.}
-\label{tab:tests}
-\begin{tabular}{p{3.6cm}p{4.0cm}p{7.6cm}}
-\toprule
-\textbf{Suite} & \textbf{Scope} & \textbf{What it checks} \\
-\midrule
-Unit tests & In-process Go tests & Capability-name normaliser, cgroup-path resolver, AppArmor profile-name sanitiser, finalisation parser, relax-spec mutator, grant-all-caps mutator. \\
-Integration smoke & bats + runtime repo & The CLI flag end-to-end against a busybox bundle; stubs replace \texttt{oci-seccomp-bpf-hook}, \texttt{capable-bpfcc}, and \texttt{bpftool}. \\
-\bottomrule
-\end{tabular}
-\end{table}
+\texttt{ensureGeneratedProfiles} handles this case for non-scan invocations. It checks that \texttt{process.\allowbreak apparmorProfile} starts with \texttt{runc\_\allowbreak scan\_}, that \path{generated/apparmor.profile} exists, and that the profile name in the file matches the spec. When the check passes and AppArmor is enabled, it calls \texttt{apparmor\_parser -r} before the container starts. Missing parser or disabled AppArmor is logged; if the spec still asks for an unloaded profile, libcontainer will surface the real start error later.
 
-\textbf{Unit tests.} The unit tests are table-driven and live next to the implementation. They cover the pure functions: the capability-name normaliser (forty-odd cases, including the tricky \texttt{CAP\_BPF} vs \texttt{cap\_bpf} distinction), the cgroup-path resolver on both cgroup-v2 layouts produced by systemd-managed and non-systemd hosts, the AppArmor profile-name sanitiser for non-ASCII container identifiers, the finalisation parser on crafted \texttt{capable-bpfcc} log fragments, and the two spec mutators that perform relaxation and grant-all-capabilities. The unit tests run under \texttt{go test ./...} and do not require any external tooling.
+This auto-load path is what makes the one-flag workflow practical: scan once, then rerun the bundle normally. The operator does not need to add a separate AppArmor load command between scan and enforcement.
 
-\textbf{Integration smoke (in-repo).} A \texttt{bats} suite exercises the CLI flag end-to-end with a minimal \texttt{busybox} bundle and a set of stubs that pretend to be \texttt{oci-seccomp-bpf-hook}, \texttt{capable-bpfcc}, and \texttt{bpftool}. The stubs ship under \texttt{contrib/} and are used only by the smoke pack. The test asserts that \texttt{generated/seccomp.json} and \texttt{generated/capable-bpfcc.log} are created, that \texttt{generated/apparmor.profile} contains the expected \texttt{flags=(complain, \ldots)} marker, that the bundle contains no executable file with the \texttt{.sh} extension (a direct check of requirement R3), and that the on-disk \texttt{config.json} has been narrowed or, for the empty stub trace, set to an empty capability set. The smoke pack is invoked as:
+\section{Generated Bundle Layout}\label{sec:impl-bundle}
+
+A scan writes only data files and hook state under \texttt{generated/}. No executable helper is copied into the bundle.
 
 \begin{verbatim}
-sudo make localintegration TESTPATH=/security_scan.bats
+<bundle>/generated/
+  seccomp.json
+  apparmor.profile
+  apparmor-README.txt
+  apparmor-load.log
+  capable-bpfcc.log
+  capabilities-from-proc-status.txt
+  spec.original.json
+  .runc_cap_trace.pid
+  .runc_aa_started_at
 \end{verbatim}
 
-\textbf{Laboratory evaluation (external).} The \texttt{runc-hardened-test} repository runs the scanner with real \texttt{oci-seccomp-bpf-hook}, \texttt{capable-bpfcc}, and \texttt{bpftool} on Ubuntu~24.04, then compares baseline and hardened enforcement against a fixed post-exploitation script. Chapter~\ref{ch:experiments} documents that protocol and its results.
+\texttt{capabilities-from-proc-status.txt} is diagnostic only. It records the kernel-granted \texttt{Cap*} masks from \texttt{/proc/<init>/status}; finalisation relies on \texttt{capable-bpfcc.log}, because granted privileges and used privileges are different facts.
+
+\section{Tests and Current Limits}\label{sec:impl-tests}
+
+The scanner is covered by table-driven unit tests and by a root-only integration smoke test. Unit tests cover capability-name parsing, finalisation behaviour, cgroup path resolution, BPF map wrapper logic, AppArmor profile-name sanitisation, audit parsing, rule insertion, and auto-load decisions. The integration test \texttt{tests/integration/security\_scan.bats} runs \texttt{runc run -{}-security-scan} on a busybox bundle with stubbed \texttt{oci-seccomp-bpf-hook}, \texttt{capable-bpfcc}, and \texttt{bpftool}. It verifies that generated artefacts exist, that \texttt{config.json} receives seccomp and AppArmor state, and that cgroup-wide capability output is aggregated into the narrowed capability set.
+
+The real-kernel evaluation is outside the runtime repository, in the \texttt{runc-hardened-test} laboratory. It uses Ubuntu~24.04, AppArmor, cgroup~v2, real BCC tooling, and the vulnerable Flask workload discussed in Chapter~\ref{ch:experiments}.
+
+Several limitations remain visible in the implementation:
+
+\begin{itemize}
+    \item capability tracing under-reports when the workload runs as \texttt{uid 0}; the runtime warns but does not rewrite the UID;
+    \item file capabilities, such as \texttt{CAP\_NET\_RAW} carried by \texttt{ping}, are not yet merged from \texttt{security.capability} extended attributes;
+    \item cgroup-wide tracing requires cgroup~v2, bpffs, \texttt{bpftool}, and a recent \texttt{capable-bpfcc}; hosts without them are rejected instead of falling back to PID tracing;
+    \item AppArmor rule synthesis currently handles common file and capability records and preserves other events as comments for operator review;
+    \item profile quality remains bounded by scan coverage, as with any dynamic profiler.
+\end{itemize}
+
+These limits do not contradict the design goals; they define the boundary of the prototype evaluated in this thesis and motivate the future work in Chapter~\ref{ch:conclusion}.
