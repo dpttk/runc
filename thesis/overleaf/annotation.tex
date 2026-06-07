@@ -19,10 +19,14 @@
 \usepackage[utf8]{inputenc}
 
 \usepackage[russian]{babel}
-\usepackage[backend=biber,style=ieee,sorting=none,autocite=inline]{biblatex}
+\usepackage[backend=biber,style=ieee,sorting=none]{biblatex}
 \bibliography{ref.bib}
 \DefineBibliographyStrings{english}{%
   bibliography = {References},}
+
+\defbibheading{bibintoc}{%
+  \section{Список использованной литературы}%
+}
 
 \usepackage{pdfpages}
 \usepackage{url}
@@ -56,36 +60,23 @@
 
 \section{Введение}
 
-Выпускная квалификационная работа посвящена проектированию, реализации и оценке среды выполнения контейнеров OCI, ориентированной на безопасность. Актуальность темы определяется тем, что контейнеры разделяют ядро хоста, тогда как эталонный \texttt{runc} ориентирован на производительность, а не на изоляцию~\cite{wang2022,volpert2024}. Seccomp, AppArmor и capabilities требуют ручной настройки; песочницы gVisor и Kata дают сильную изоляцию ценой 20--100\% накладных расходов~\cite{viktorsson2020}; кластерные рекордеры профилей предполагают инфраструктуру оркестрации. Операторы plain \texttt{runc} остаются без интегрированного инструмента автоматизации.
+Выпускная квалификационная работа посвящена проектированию, реализации и оценке среды выполнения контейнеров OCI, ориентированной на безопасность. Актуальность темы определяется тем, что контейнеры разделяют ядро хоста, тогда как эталонный \texttt{runc} ориентирован на производительность, а не на изоляцию; seccomp, AppArmor и capabilities требуют ручной настройки, а песочницы gVisor и Kata дают сильную изоляцию ценой 20--100\% накладных расходов. Операторы plain \texttt{runc} остаются без интегрированного инструмента автоматизации.
 
-Цель --- спроектировать и экспериментально оценить форк \texttt{runc}, генерирующий профили seccomp, AppArmor и capabilities из наблюдаемого поведения нагрузки одним флагом CLI. Объектом исследования является изоляция контейнерных процессов на Linux в рамках OCI. Предметом --- интегрированная runtime-локальная генерация профилей confinement. Научная новизна заключается в объединении трёх механизмов ядра в двухфазный конвейер «сканирование --- принудительное исполнение» с cgroup-wide трассировкой capabilities и самовыполняемыми OCI-хуками внутри бинарного файла runtime.
+Цель --- спроектировать и экспериментально оценить форк \texttt{runc}, генерирующий профили seccomp, AppArmor и capabilities из наблюдаемого поведения нагрузки одним флагом CLI. Объектом исследования является изоляция контейнерных процессов на Linux в рамках OCI; предметом --- интегрированная runtime-локальная генерация профилей confinement. Научная новизна --- объединение трёх механизмов ядра в двухфазный конвейер «сканирование --- принудительное исполнение» с cgroup-wide трассировкой capabilities и самовыполняемыми OCI-хуками внутри бинарного файла runtime.
 
 \section{Краткое содержание}
 
-В основной части выполнен обзор литературы по контейнерной безопасности, изолированным runtime и автоматической генерации seccomp~\cite{lopes2020}. Сравнения runtime, как правило, противопоставляют \texttt{runc} с политиками по умолчанию песочницам, не измеряя потенциал hardened shared-kernel runtime; автоматизация чаще охватывает только seccomp, а AppArmor и capabilities остаются фрагментированными~\cite{mattetti2020}.
+В основной части выполнен обзор литературы по контейнерной безопасности, изолированным runtime и автоматической генерации seccomp; сформулированы требования к сканеру (однофлаговый UX, три профиля за проход, совместимость с upstream \texttt{runc}, финализация без расширения привилегий) и модель угроз post-exploitation после компрометации приложения.
 
-Проектная часть формулирует требования к сканеру: однофлаговый UX, три профиля за один проход, совместимость с upstream \texttt{runc}, минимальные зависимости и финализация, которая никогда не расширяет привилегии. Модель угроз охватывает эскалацию через неиспользуемые syscalls и capabilities, выход за пределы файловой системы и post-exploitation после компрометации приложения; уязвимости прикладного уровня и supply-chain атаки вынесены за рамки.
+Независимо от режима сканирования форк меняет дефолт безопасности: \texttt{runc spec} генерирует пустой набор capabilities, а наборы upstream (3 capabilities) и Docker (14 capabilities) доступны через два взаимоисключающих флага. Режим \texttt{--security-scan} ослабляет confinement в памяти, устанавливает хуки, запускает контейнер, останавливает трассировщики и сужает \texttt{config.json}; seccomp записывается через runtime-трассировку syscalls, capabilities --- через eBPF по cgroup v2, AppArmor обучается в complain mode. Хуки реализованы подкомандами \texttt{runc}; OCI bundle не получает исполняемых артефактов.
 
-Независимо от режима сканирования форк меняет дефолт безопасности: \texttt{runc spec} теперь генерирует пустой набор capabilities, а исторические наборы upstream (3 capabilities) и Docker (14 capabilities) доступны через два взаимоисключающих флага. Архитектура реализует режим \texttt{--security-scan}: ослабление confinement в памяти, установка хуков, запуск контейнера, остановка трассировщиков, сужение \texttt{config.json}. Seccomp записывается через runtime-трассировку syscalls; capabilities --- через eBPF-трассировку по cgroup~v2; AppArmor обучается в complain mode. Хуки реализованы подкомандами \texttt{runc}; OCI bundle не получает исполняемых артефактов.
-
-Реализация --- форк \texttt{opencontainers/runc}. Лабораторный стенд \texttt{runc-hardened-test} на Ubuntu~24.04 сравнивает stock \texttt{runc} и hardened runtime на уязвимом Flask-приложении: baseline, scan с легитимным трафиком, enforcement и повтор post-exploitation payload. Один проход \texttt{--security-scan} формирует \texttt{seccomp.json}, профиль AppArmor и журнал capabilities. После scan-then-enforce reconnaissance, чтение \texttt{/etc/shadow}, reverse shell и mount probe блокируются enforced seccomp; ping и upload календаря сохраняются после документированных корректировок. Ограничения: покрытие равно пройденным путям; file capabilities не попадают в trace; сравнение с gVisor и Kata носит аналитический характер по данным~\cite{wang2022,volpert2024}.
+На стенде \texttt{runc-hardened-test} (Ubuntu 24.04, уязвимое Flask-приложение) один проход \texttt{--security-scan} формирует \texttt{seccomp.json}, профиль AppArmor и журнал capabilities. После scan-then-enforce reconnaissance, чтение \texttt{/etc/shadow}, reverse shell и mount probe блокируются enforced seccomp; ping и upload календаря сохраняются. Ограничения: покрытие равно пройденным путям; file capabilities не попадают в trace.
 
 \section{Заключение}
 
-В результате работы разработан и экспериментально оценён security-first форк OCI runtime \texttt{runc}. Форк вносит три изменения в слой runtime: пустой набор capabilities по умолчанию с двумя opt-in флагами, флаг \texttt{--security-scan} для генерации профилей seccomp, AppArmor и capabilities, и сужение \texttt{config.json} до наблюдаемого набора привилегий без его расширения. Основной вклад --- интегрированная генерация профилей seccomp, AppArmor и capabilities в воспроизводимом runtime-локальном конвейере с одним флагом \texttt{--security-scan}. Полученные результаты подтверждают существенное улучшение post-exploitation containment относительно stock \texttt{runc} на тестируемой нагрузке при сохранении легитимного поведения приложения. Выводы ограничены одним web-workload и качественными метриками безопасности; дальнейшая работа включает слияние file capabilities, расширение лаборатории и количественную оценку производительности относительно изолированных runtime~\cite{reeves2021runtime}.
+Разработан и экспериментально оценён security-first форк OCI runtime \texttt{runc}: пустой набор capabilities по умолчанию с двумя opt-in флагами, флаг \texttt{--security-scan} для генерации профилей seccomp, AppArmor и capabilities, сужение \texttt{config.json} без расширения привилегий. Конвейер существенно улучшает post-exploitation containment относительно stock \texttt{runc} на тестируемой нагрузке при сохранении легитимного поведения; выводы ограничены одним web-workload и качественными метриками.
 
-\section{Список использованной литературы}
-
-{\small
-\setlength{\parskip}{0.15em}
-\begin{enumerate}[label=\arabic*., leftmargin=1.5em, itemsep=0.15em, parsep=0pt]
-\item Wang X., Johannesson D. Performance and isolation analysis of RunC, gVisor and Kata Containers runtimes // Cluster Computing. 2022. Vol.~25. P.~2363--2380.
-\item Volpert S., Winkelhofer S., Wesner S., Domaschka J. An Empirical Analysis of Common OCI Runtimes' Performance Isolation Capabilities // Proceedings of the 15th ACM/SPEC ICPE. 2024. P.~60--70.
-\item Viktorsson W., Klein C., Tordsson J. Security-Performance Trade-offs of Kubernetes Container Runtimes // 2020 IEEE MASCOTS. 2020. P.~1--4.
-\item Lopes N., Martins R., Correia M. E., Serrano S., Nunes F. Container Hardening Through Automated Seccomp Profiling // Proceedings of the 6th International Workshop on Container Technologies and Container Clouds. 2020. P.~31--36.
-\item Mattetti M., Allouche Y. Automatic security hardening and protection of linux containers // Computers \& Security. 2020. Vol.~96. Article 101921.
-\item Reeves M., Tian D. J., Bianchi A., Celik Z. B. Towards Improving Container Security by Preventing Runtime Escapes // 2021 IEEE SecDev. 2021. P.~38--46.
-\end{enumerate}
-}
+\nocite{wang2022,volpert2024,viktorsson2020,lopes2020,mattetti2020,reeves2021runtime}
+\printbibliography[heading=bibintoc]
 
 \end{document}
