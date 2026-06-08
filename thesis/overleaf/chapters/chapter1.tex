@@ -21,11 +21,10 @@ This thesis addresses three concrete gaps that emerge from the literature and fr
 
 \section{Research Questions}
 
-\begin{enumerate}
-    \item Can the runtime itself, without infrastructure changes, generate seccomp, AppArmor, and capability profiles whose security level approaches what a skilled operator would produce by manual tuning or what a cluster-side recorder produces in a CI pipeline?
-    \item How should a runtime expose this capability so that it remains a one-flag operation for a developer, while still satisfying the constraints that make dynamic profiling trustworthy (child-process coverage, profile relaxation during the recording, non-root recommendation)?
-    \item After scan-then-enforce on a representative workload, how much does post-exploitation containment improve relative to stock \texttt{runc} with default policies?
-\end{enumerate}
+\begin{description}
+    \item[RQ1.] Can the runtime itself, without infrastructure changes, generate seccomp, AppArmor, and capability profiles whose security level approaches what a skilled operator would produce by manual tuning or what a cluster-side recorder produces in a CI pipeline?
+    \item[RQ2.] After scan-then-enforce on a representative workload, does the hardened runtime prevent command-injection exploitation and improve containment relative to stock \texttt{runc} with default policies?
+\end{description}
 
 \section{Proposed Approach}
 
@@ -44,13 +43,13 @@ A second mode, \emph{enforcement}, runs the workload with the generated profiles
 
 \section{Experimental Evaluation}
 
-Evaluation has two parts. \textbf{Empirical.} The \texttt{runc-hardened-test} laboratory exercises the scanner on an intentionally vulnerable Flask workload: it validates that scan-then-enforce produces usable profiles, documents edge cases and drawbacks (file capabilities, complain-mode audit parsing, scan coverage), and compares post-exploitation containment against stock \texttt{runc} on the same injection payloads. \textbf{Analytical.} Chapter~\ref{ch:experiments} also situates the runtime against manual authoring, cluster-side recorders, and sandboxed runtimes using the competitive landscape from Chapter~\ref{ch:litreview} (Table~\ref{tab:competitors}) and published measurements from prior work---without running sandbox benchmarks on the fork itself. Quantitative performance comparison against gVisor, Kata, or a dedicated benchmark harness is deferred to future work.
+Evaluation has two parts. \textbf{Empirical.} The \texttt{runc-hardened-test} laboratory exercises the scanner on an intentionally vulnerable Flask workload: it validates that scan-then-enforce produces usable profiles, documents edge cases and drawbacks (file capabilities, complain-mode audit parsing, scan coverage), and compares whether command injection and follow-on payloads succeed under stock \texttt{runc} vs.\ hardened enforcement. \textbf{Analytical.} Chapter~\ref{ch:experiments} also situates the runtime against manual authoring, cluster-side recorders, and sandboxed runtimes using the competitive landscape from Chapter~\ref{ch:litreview} (Table~\ref{tab:competitors}) and published measurements from prior work---without running sandbox benchmarks on the fork itself. Quantitative performance comparison against gVisor, Kata, or a dedicated benchmark harness is deferred to future work.
 
 \section{Expected Contribution}
 
 \begin{enumerate}
     \item A practical, developer-grade runtime that produces seccomp, AppArmor, and capability profiles from a single CLI flag, with no cluster, recorder, or operator prerequisites.
-    \item Empirical evidence that scan-then-enforce improves post-exploitation containment relative to default \texttt{runc} on a reproducible laboratory workload.
+    \item Empirical evidence that scan-then-enforce prevents command-injection exploitation and improves containment relative to default \texttt{runc} on a reproducible laboratory workload.
     \item Evidence-based guidance for organisations choosing between runtime-side automation, manual policy authoring, cluster-side recorders, and full sandboxing (the last analysed from the literature).
     \item A reproducible security laboratory (\texttt{runc-hardened-test}) that documents how the empirical claims can be replayed on a stock Linux host with cgroup~v2 and AppArmor.
 \end{enumerate}

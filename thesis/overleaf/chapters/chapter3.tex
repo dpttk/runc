@@ -45,7 +45,7 @@ The threat model assumes a co-tenant or compromised in-container process attempt
 The threat model does \emph{not} cover the following classes of attacks, and the proposed design does not claim to defend against them.
 
 \begin{itemize}
-    \item \emph{Web-application vulnerabilities.} SQL injection, cross-site scripting, insecure deserialisation, broken authentication, and any other vulnerability whose blast radius stays inside the application's own intended privileges are out of scope. The scanner cannot tell a legitimate \texttt{open} on a user-supplied filename apart from one that exploits a path-traversal bug in the application: both look, from the kernel's side, like legitimate syscalls made by the application with the capabilities it is supposed to have.
+    \item \emph{Web-application vulnerabilities without syscall escalation.} SQL injection confined to the database, cross-site scripting, insecure deserialisation, and broken authentication are out of scope for the scanner --- it does not patch application logic. OS command injection that reaches \texttt{execve} is exercised in the laboratory and is blocked by the generated seccomp profile when process-creation syscalls were not observed during the scan.
     \item \emph{Application-level misconfiguration.} A database exposed on \texttt{0.0.0.0} with a default password, an admin endpoint served without authentication, or a secret leaked through an unprotected log file are not mitigated by the scanner. These are configuration errors one layer above the runtime and are the responsibility of the application's own security review.
     \item \emph{Malicious supply-chain images.} A compromised base image whose behaviour is crafted to look benign during the scan (for example, an image that exfiltrates data only when it detects a production network) is out of scope. This matches the well-known limitation of any trace-based recorder, including the Security Profiles Operator and Inspektor Gadget~\cite{spo2025,inspektorgadget2025}.
     \item \emph{Side-channel attacks.} Cache-timing, transient-execution, and microarchitectural leaks are out of scope and would need mechanisms unrelated to profile generation.
@@ -96,13 +96,13 @@ Every container action---opening a file, binding a port, spawning a shell---even
 Capabilities & Docker default & trace (wide) & narrowed set & expert-tuned & cluster policy & separate kernel (lit.) \\
 Seccomp & Docker default & trace (wide) & allow-list & expert-tuned & cluster policy & filtered/shim (lit.) \\
 AppArmor & often none & complain & enforce & expert-tuned & cluster policy & N/A or host LSM (lit.) \\
-Post-exploit shell & often possible & same & blocked (\texttt{fork}/\texttt{exec}) & depends & depends & strong isolation (lit.) \\
+Command injection & succeeds & same & blocked (\texttt{fork}/\texttt{exec}) & depends & depends & strong isolation (lit.) \\
 \midrule
 \multicolumn{7}{@{}l@{}}{\emph{Empirical in this thesis:} default vs.\ enforce columns. \emph{Analytical:} manual, recorder, sandbox (literature).} \\
 \bottomrule
 \end{tabular}%
 }
-\caption{Syscall path from application to host (after Jajoo~\cite{jajoo2025syscalls}) and qualitative mechanism use per confinement posture. Hardened enforcement blocks reconnaissance shells because the generated seccomp profile omits process-creation syscalls the workload did not exercise during the scan.}
+\caption{Syscall path from application to host (after Jajoo~\cite{jajoo2025syscalls}) and qualitative mechanism use per confinement posture. Hardened enforcement prevents command injection because the generated seccomp profile omits process-creation syscalls the workload did not exercise during the scan.}
 \label{fig:security-levels}
 \end{figure}
 
@@ -236,9 +236,9 @@ The result is that the OCI bundle contains no executable file produced by the sc
 
 This section describes the evaluation methodology; measured outcomes are reported in Chapter~\ref{ch:experiments} and interpreted in Chapter~\ref{ch:discussion}.
 
-\textbf{Empirical configurations.} The laboratory compares two configurations on the same OCI bundle and host: (a)~stock upstream \texttt{runc} without generated profiles (baseline), and (c)~the proposed runtime after a full \texttt{--security-scan} pass followed by enforcement with the generated seccomp, AppArmor, and capability artefacts. The intentionally vulnerable Flask workload in \texttt{runc-hardened-test} (system monitor plus calendar) is exercised with legitimate HTTP traffic during the scan and with a fixed post-exploitation payload script before and after hardening.
+\textbf{Empirical configurations.} The laboratory compares two configurations on the same OCI bundle and host: (a)~stock upstream \texttt{runc} without generated profiles (baseline), and (c)~the proposed runtime after a full \texttt{--security-scan} pass followed by enforcement with the generated seccomp, AppArmor, and capability artefacts. The intentionally vulnerable Flask workload in \texttt{runc-hardened-test} (system monitor plus calendar) is exercised with legitimate HTTP traffic during the scan and with a fixed command-injection and follow-on payload script before and after hardening.
 
-\textbf{Empirical metrics.} Profile-quality metrics (RQ1) cover the generated seccomp allow-list, cgroup-wide capability trace, and AppArmor complain-mode profile, including known gaps (file capabilities, audit parsing). Containment metrics (RQ3) report per attack class whether post-injection actions succeed under baseline vs.\ hardened enforcement. Edge cases and drawbacks are documented explicitly rather than as an implementation history.
+\textbf{Empirical metrics.} Profile-quality metrics (RQ1) cover the generated seccomp allow-list, cgroup-wide capability trace, and AppArmor complain-mode profile, including known gaps (file capabilities, audit parsing). Containment metrics (RQ2) report per attack class whether command injection and follow-on payloads succeed under baseline vs.\ hardened enforcement. 
 
 \textbf{Analytical comparison.} Manual tuning, cluster-side recorders (SPO, Inspektor Gadget), and sandboxed runtimes (gVisor, Kata) are compared qualitatively using Table~\ref{tab:competitors} and the literature~\cite{wang2022,viktorsson2020,volpert2024}. No head-to-head sandbox benchmarks are run in this thesis; startup and steady-state costs for sandboxes are cited from prior work only.
 

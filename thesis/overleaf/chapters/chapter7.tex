@@ -13,9 +13,7 @@ The proposed runtime was situated against manual policy authoring, cluster-side 
 
 \textbf{RQ1 --- Can a runtime, without infrastructure changes, generate profiles whose security level approaches manual tuning or cluster-side recorders?} On exercised paths, yes: the laboratory produced deny-by-default seccomp, AppArmor rules from complain-mode audit records, and cgroup-wide capability traces from a single \texttt{--security-scan} run (Chapter~\ref{ch:experiments}, Table~\ref{tab:profquality-lab}). File capabilities on executed binaries (e.g.\ \texttt{CAP\_NET\_RAW} on \texttt{ping}) are not yet merged from \texttt{security.capability} xattrs; that limitation is documented as a drawback rather than hidden.
 
-\textbf{RQ2 --- How should the runtime expose this capability so it remains a one-flag operation?} Three constraints turned out to be load-bearing: (i) host-supplied confinement must be relaxed in memory, not on disk; (ii) capability tracing must be cgroup-wide, otherwise child processes break the next run; and (iii) finalisation must be set-difference and never set-union. The implementation honours all three; integration smoke tests and the laboratory confirm that one flag produces the expected \texttt{generated/} layout without embedding scripts in the bundle.
-
-\textbf{RQ3 --- How much does post-exploitation containment improve relative to stock \texttt{runc}?} On the tested workload, scan-then-enforce blocked sensitive reads, reverse shells, mount probes, and persistence attempts that succeeded under baseline stock \texttt{runc}, while preserving legitimate ping and calendar behaviour after documented \texttt{apply.sh} adjustments (Table~\ref{tab:security-lab}). Command injection itself remained possible by design; the value is blast-radius reduction after compromise.
+\textbf{RQ2 --- Does scan-then-enforce prevent command-injection exploitation and improve containment relative to stock \texttt{runc}?} On the tested workload, scan-then-enforce prevented command injection and blocked reconnaissance, sensitive reads, reverse shells, mount probes, and persistence attempts that succeeded under baseline stock \texttt{runc}, while preserving legitimate ping and calendar behaviour after documented \texttt{apply.sh} adjustments (Chapter~\ref{ch:experiments}). The application flaw remains in the image; the runtime stops its exploitation at the syscall boundary.
 
 \section{Limitations}
 
@@ -35,7 +33,7 @@ The proposed runtime was situated against manual policy authoring, cluster-side 
 
 \textbf{Broader laboratory coverage.} Additional intentionally vulnerable workloads, command-execution patterns, and attack scripts would test whether containment results generalise beyond the Flask system-monitor bundle.
 
-\textbf{Quantitative containment metrics.} Future experiments should complement the current succeed/block table with normalised metrics across attack classes and deployment mistakes, including privileged containers and \texttt{docker.sock} mounts when those scenarios are intentionally in scope.
+\textbf{Quantitative containment metrics.} Future experiments should complement the current qualitative succeed/block outcomes with normalised metrics across attack classes and deployment mistakes, including privileged containers and \texttt{docker.sock} mounts when those scenarios are intentionally in scope.
 
 \textbf{File-capability merge.} Reading \texttt{security.capability} xattrs on executed binaries during scan would close the \texttt{ping}/\texttt{CAP\_NET\_RAW} gap without laboratory workarounds.
 

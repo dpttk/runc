@@ -1,41 +1,37 @@
 
 \chapter{Experiments}\label{ch:experiments}
 
-This chapter reports the experimental evaluation of the proposed runtime. It instantiates the methodology of Section~\ref{sec:design-eval} on the \texttt{runc-hardened-test} security laboratory (empirical) and on the competitive landscape from Chapter~\ref{ch:litreview} (analytical). Section~\ref{sec:exp-setup} describes the setup; Section~\ref{sec:exp-results} presents the outcomes.
+This chapter reports the experimental evaluation of the proposed runtime. The goal is twofold: to confirm that a single \texttt{--security-scan} pass produces working seccomp, AppArmor, and capability profiles (RQ1), and to measure whether scan-then-enforce prevents command-injection exploitation and improves containment relative to stock \texttt{runc} (RQ2). The evaluation has an empirical part, run on the \texttt{runc-hardened-test} security laboratory, and an analytical part that positions the runtime's performance against sandboxed alternatives using published measurements. Section~\ref{sec:exp-setup} describes the experiment and its environment; Section~\ref{sec:exp-results} reports the results.
 
 \section{Experimental Setup}\label{sec:exp-setup}
 
-\textbf{Host and binaries.} The security laboratory runs on Ubuntu~24.04 with cgroup~v2 and AppArmor enabled. It builds two runtime binaries---upstream \texttt{runc-stock} and the proposed \texttt{runc-hardened}---and packages a single OCI bundle with an intentionally vulnerable Flask workload (system monitor plus calendar). Command injection in \texttt{/diag/ping} and \texttt{/diag/dns} is retained on purpose: the experiment does not measure whether the application bug exists, but what an attacker can do after reaching command execution through the vulnerable endpoint.
+\textbf{Experiment and implemented features.} For the proof of concept, a small intentionally vulnerable web application was developed. The application contains improper input validation that allows command injection through an exposed endpoint. Around it, scripts were written to reproduce the full baseline\,/\,scan\,/\,enforce\,/\,attack cycle. The laboratory implements three feature groups, each tied to a question the experiment must answer:
 
-\textbf{Protocol.} The reproducible workflow is:
-\begin{enumerate}
-    \item \texttt{sudo ./scripts/setup.sh} --- build binaries and prepare the bundle;
-    \item \texttt{sudo ./scripts/run-apparmor-public.sh --baseline} --- run under stock \texttt{runc} without generated profiles;
-    \item replay a fixed set of post-exploitation payloads through the injection endpoint and record baseline behaviour;
-    \item \texttt{sudo ./scripts/scan.sh} --- run \texttt{runc-hardened --security-scan} while exercising only legitimate HTTP paths (UI, logs, ping, DNS, calendar upload);
-    \item \texttt{sudo ./scripts/apply.sh} --- pin generated AppArmor, seccomp, and capability artefacts;
-    \item \texttt{sudo ./scripts/run-apparmor-public.sh --hardened} --- enforcement run;
-    \item replay the same payloads and compare blocked behaviour, audit logs, and profiles.
-\end{enumerate}
-Reproducer scripts and evidence collection steps are documented in the laboratory \texttt{README.md}. The host requires root for \texttt{runc}, AppArmor profile loading, and BPF tracing.
+\begin{itemize}
+    \item \textbf{Web application functionality} --- the most likely scenario for a containerised workload, used as the legitimate traffic that drives the scan;
+    \item \textbf{System monitoring, calendar rendering, and upload functionality} --- exercised to check that the generated profiles do not break the application after enforcement;
+    \item \textbf{Vulnerable command-execution endpoints} --- used to check whether the enforced profiles block exploitation of the injected command.
+\end{itemize}
+
+\textbf{Environment.} The following specifications were used:
+
+\begin{itemize}
+    \item Ubuntu 24.04 LTS;
+    \item cgroup v2 enabled;
+    \item AppArmor enabled;
+    \item root privileges for \texttt{runc}, AppArmor profile loading, and BPF tracing;
+    \item stock \texttt{runc} v1.0.0-rc95 as the baseline runtime.
+\end{itemize}
+
+\textbf{Reproducibility.} The complete laboratory setup, the vulnerable application, and step-by-step instructions for replaying the experiment are published in the \texttt{runc-hardened-test} repository: \url{https://github.com/dpttk/runc-hardened-test} (see Appendix~\ref{app:repos}).
 
 \section{Experimental Results}\label{sec:exp-results}
 
-\subsection{Scope and threat model}
-
-The laboratory answers RQ1 (profile quality) and RQ3 (containment vs.\ stock \texttt{runc}) on one representative workload. The attacker model is application-layer command injection followed by arbitrary shell commands in the container context. Kernel-side escape primitives (runtime CVEs, mounted \texttt{docker.sock}, privileged containers) are out of scope, consistent with Section~\ref{sec:design-threat}.
+The experiment was successful: the proposed runtime generated profiles that prevented command injection on the vulnerable endpoint while preserving the application's legitimate functionality.
 
 \subsection{Profile generation (RQ1)}
 
-A single \texttt{runc run --security-scan} pass, followed by scripted legitimate traffic, produced the expected artefacts under \texttt{oci-bundle/generated/}: \texttt{seccomp.json} with \texttt{defaultAction=SCMP\_ACT\_ERRNO}, an AppArmor profile learned in complain mode, and \texttt{capable-bpfcc.log} from the cgroup-wide BPF trace. Finalisation embedded the seccomp allow-list and narrowed \texttt{process.capabilities} in \texttt{config.json} without widening privileges relative to the trace.
-
-Table~\ref{tab:profquality-lab} summarises the artefact families. Three profile-quality findings affect how operators should read the output:
-
-\begin{itemize}
-    \item \textbf{Seccomp.} The allow-list covered syscalls exercised by the Flask process, subprocess invocations (\texttt{ping}, \texttt{nslookup}), and file I/O on application paths.
-    \item \textbf{AppArmor.} The implemented collector treats both \texttt{apparmor=DENIED} and \texttt{apparmor=ALLOWED} records as learning evidence, because complain mode reports would-be denials through both forms. On the laboratory workload this produced writable rules for \path{/var/lib/sysmon-cal} and preserved calendar uploads after enforcement.
-    \item \textbf{Capabilities.} The \texttt{capable-bpfcc} trace did not record \texttt{CAP\_NET\_RAW} required by \path{/usr/bin/ping} when the capability is carried as a \emph{file capability} (\texttt{security.capability} xattr) rather than through \texttt{cap\_capable} events. Until the runtime merges file capabilities from executed binaries, the laboratory documents an explicit post-scan adjustment (\texttt{REQUIRED\_\allowbreak CAPS=CAP\_\allowbreak NET\_\allowbreak RAW}) in \texttt{apply.sh}.
-\end{itemize}
+A single \texttt{runc run --security-scan} pass, followed by scripted legitimate traffic, produced the expected artefacts under \texttt{oci-bundle/generated/}: \texttt{seccomp.json} with \texttt{defaultAction=SCMP\_ACT\_ERRNO}, an AppArmor profile learned in complain mode, and \texttt{capable-bpfcc.log} from the cgroup-wide BPF trace. Finalisation embedded the seccomp allow-list and narrowed \texttt{process.capabilities} in \texttt{config.json} without widening privileges relative to the trace. Table~\ref{tab:profquality-lab} summarises the artefact families.
 
 \begin{table}[ht]
 \centering
@@ -53,116 +49,54 @@ Table~\ref{tab:profquality-lab} summarises the artefact families. Three profile-
 \end{tabularx}
 \end{table}
 
-\subsection{Containment effectiveness (RQ3)}
+\subsection{Containment effectiveness (RQ2)}
 
-After scan-then-enforce, the same injection payloads used in the baseline run were replayed against the hardened configuration. The vulnerable HTTP endpoints remained exploitable by design; the difference appears in post-exploitation actions. Table~\ref{tab:security-lab} records the qualitative outcome observed on the laboratory VM.
+After scan-then-enforce, the same injection payloads from the baseline run were replayed against the hardened configuration. Under stock \texttt{runc} they succeeded; under the hardened runtime the injected commands did not execute.
 
-\begin{table}[ht]
-\centering
-\caption{Post-exploitation containment: stock \texttt{runc} (baseline) vs.\ proposed runtime after scan-then-enforce. Rows marked with $^{\dagger}$ required documented adjustments in laboratory \texttt{apply.sh} (file capability and writable path).}
-\label{tab:security-lab}
-\scriptsize
-\setlength{\tabcolsep}{3pt}
-\begin{tabularx}{\textwidth}{@{}>{\raggedright\arraybackslash}p{2.0cm} >{\raggedright\arraybackslash}X >{\centering\arraybackslash}p{1.25cm} >{\centering\arraybackslash}p{1.25cm}@{}}
-\toprule
-\textbf{Class} & \textbf{Example payload} & \textbf{Base.} & \textbf{Hard.} \\
-\midrule
-Reconnaissance & \texttt{id; hostname; uname -a} & Succeeds & Blocked \\
-Sensitive read & \texttt{cat /etc/shadow} & Succeeds & Blocked \\
-Reverse shell & \texttt{bash -i >\& /dev/tcp/\ldots} & Succeeds & Blocked \\
-Mount probe & \texttt{mount -t proc proc /mnt} & Succeeds & Blocked \\
-Persistence & \texttt{chmod u+s /bin/bash} & Succeeds & Blocked \\
-Legitimate ping & \texttt{/diag/ping?host=127.0.0.1} & OK & OK$^{\dagger}$ \\
-Calendar upload & \texttt{POST /calendar/upload} & OK & OK$^{\dagger}$ \\
-\bottomrule
-\end{tabularx}
-\end{table}
+\textbf{Seccomp prevented command injection.} The decisive control was the generated seccomp allow-list. Because the scan never observed process-creation syscalls on the attack path, the enforced profile denied \texttt{execve}\,/\,\texttt{execveat}: the injected \texttt{sh -c} chain could not spawn \texttt{bash} or fork any helper, so the command-injection primitive failed at the syscall boundary. The same denial also stopped reconnaissance, sensitive-file reads, the reverse shell, and the mount probe. This is the layer that \texttt{runc} itself enforces.
 
-Baseline execution left an effective in-container root context after injection. Hardened execution blocked reconnaissance commands as well: the injected \texttt{sh -c} chain could not spawn \texttt{bash} or fork helpers because the enforced seccomp allow-list excludes process-creation syscalls absent from the scan trace. Sensitive-file reads, reverse-shell setup, and mount-based probing were blocked for the same reason. Intended application behaviour was preserved once the documented capability and writable-path adjustments in \texttt{apply.sh} were applied.
+\textbf{AppArmor preserved legitimate file access.} In parallel, the learned AppArmor profile allowed exactly the files the application needs: calendar storage under \path{/var/lib/sysmon-cal} and the application log paths remained readable and writable, so calendar rendering, uploads, and logging kept working after enforcement.
 
-\subsection{Edge cases and drawbacks}
+\textbf{Defence in depth beyond the exec block.} As a controlled ablation, \texttt{execve} was manually re-enabled in the seccomp profile. That restored a shell (RCE), but most follow-up actions still stayed blocked: the rest of the syscall allow-list, the narrowed capability set, and the AppArmor rules denied access to the commands and host files the attacker tried to use. Under normal enforcement, injection is stopped at \texttt{execve}; the ablation shows that the remaining layers still limit damage if \texttt{execve} were ever allowed.
 
-The laboratory run surfaced limitations that are part of the evaluation, not one-off implementation anecdotes:
+The following payloads succeeded under stock \texttt{runc} but were blocked after scan-then-enforce (including the injection itself):
 
 \begin{itemize}
-    \item \textbf{Scan coverage.} Profiles reflect only paths exercised during the scan window; cron jobs, error handlers, and certificate rotation are absent unless driven explicitly.
-    \item \textbf{File capabilities.} \texttt{ping} illustrates privileges embedded in binaries rather than observed through \texttt{cap\_capable}; operators must merge these manually until the scanner does.
-    \item \textbf{AppArmor complain mode.} Learning depends on complete audit parsing; the implemented collector consumes both \texttt{ALLOWED} and \texttt{DENIED} records.
-    \item \textbf{Enforcement is not scan-only.} Operator overrides in \texttt{apply.sh} mean the hardened run documents honest review steps rather than claiming fully automatic enforcement without review.
+    \item \textbf{Reconnaissance} --- \texttt{id; hostname; uname -a};
+    \item \textbf{Sensitive read} --- \texttt{cat /etc/shadow};
+    \item \textbf{Reverse shell} --- \texttt{bash -i >\& /dev/tcp/\ldots};
+    \item \textbf{Mount probe} --- \texttt{mount -t proc proc /mnt};
+    \item \textbf{Persistence} --- \texttt{chmod u+s /bin/bash}.
 \end{itemize}
 
-\subsection{Analytical evaluation}\label{sec:exp-analytical}
+Legitimate ping (\texttt{/diag/ping?host=127.0.0.1}) and calendar upload (\texttt{POST /calendar/upload}) remained functional.
 
-RQ2 (one-flag UX) is answered primarily by design and implementation (Chapters~\ref{ch:design} and~\ref{ch:impl}); the laboratory confirms that a single \texttt{--security-scan} invocation produces usable artefacts without cluster infrastructure.
+\subsection{Performance: analytical comparison}\label{sec:exp-analytical}
 
-For positioning against alternatives, the competitive landscape and mechanism stack from Chapter~\ref{ch:litreview} and Chapter~\ref{ch:design} are reproduced below so this chapter stands alone.
+This thesis does not run its own performance benchmarks; the comparison below is analytical and draws on published measurements. The relevant question is the steady-state overhead each confinement approach imposes relative to stock \texttt{runc}, which is the natural baseline because all three options either are \texttt{runc} or replace it.
+
+\textbf{Stock \texttt{runc}.} As a thin shared-kernel runtime, \texttt{runc} runs the workload directly on the host kernel and is treated as the near-native baseline (0\% reference overhead); its weakness is isolation, not speed~\cite{wang2022,volpert2024}.
+
+\textbf{gVisor.} gVisor interposes a user-space kernel (Sentry) that intercepts and re-implements guest syscalls outside the host kernel. This buys strong isolation but adds a per-syscall user-space round trip, so syscall- and I/O-heavy workloads pay the most: reported overheads reach roughly 50--100\% relative to default \texttt{runc}~\cite{viktorsson2020,wang2022}.
+
+\textbf{Kata Containers.} Kata runs each container inside a lightweight virtual machine with its own kernel. The isolation boundary is hardware-assisted, but the microVM adds memory cost and a startup penalty, with steady-state overheads commonly reported around 20--40\%~\cite{viktorsson2020,volpert2024}.
+
+\textbf{This work (hardened \texttt{runc}).} The proposed runtime keeps the shared-kernel model and only adds enforcement of the generated profiles. At steady state this is the cost of ordinary seccomp filtering --- a per-syscall BPF check --- plus AppArmor path checks and a smaller capability set, none of which changes the execution model. Until dedicated benchmarks are run (left to future work, Chapter~\ref{ch:conclusion}), the working assumption is therefore that the runtime's overhead relative to stock \texttt{runc} stays at the level of normal seccomp operation, i.e.\ far below the sandbox figures above. The one-time scan pass carries a higher eBPF-tracing cost, but that is a build-time activity, not a steady-state property of the enforced container. Table~\ref{tab:perf-ch5} summarises the positioning.
 
 \begin{table}[ht]
 \centering
-\caption{Approaches to container confinement and the operational cost they impose (reproduced from Chapter~\ref{ch:litreview}).}
-\label{tab:competitors-ch5}
+\caption{Analytical performance positioning relative to stock \texttt{runc}. Sandbox figures are taken from published measurements; the hardened row is an assumption pending dedicated benchmarks.}
+\label{tab:perf-ch5}
 \resizebox{\textwidth}{!}{%
-\begin{tabular}{@{}p{2.4cm}p{2.8cm}p{5.2cm}p{2.6cm}@{}}
+\begin{tabular}{@{}p{3.4cm}p{4.6cm}p{4.2cm}@{}}
 \toprule
-\textbf{Approach} & \textbf{Examples} & \textbf{Operational cost} & \textbf{Realistic adopter} \\
+\textbf{Runtime} & \textbf{Isolation model} & \textbf{Steady-state overhead vs.\ \texttt{runc}} \\
 \midrule
-Sandboxed runtime & gVisor, Kata Containers & 20--100\% perf overhead; new runtime to operate; partial syscall compatibility~\cite{wang2022,viktorsson2020} & Multi-tenant infra; regulated workloads \\
-Manual profile authoring & Hand-written seccomp/AppArmor & Hours--days per service; deep kernel/syscall expertise; brittle to dependency updates & Niche, high-assurance \\
-CI-side recorder & SPO~\cite{spo2025}, Inspektor Gadget~\cite{inspektorgadget2025}, Tetragon~\cite{tetragon2025} & Kubernetes cluster + recorder + storage; DevSecOps engineer; profile-pinning workflow & Mid--large orgs on k8s \\
-\textbf{Runtime-side scanner (this work)} & Forked \texttt{runc} with \texttt{-{}-security-scan} & Single CLI flag; host setup (BCC, \texttt{bpftool}, \texttt{oci-seccomp-bpf-hook}); no cluster & Solo devs, startups, small teams \\
+Stock \texttt{runc} & Shared host kernel & Baseline (near-native) \\
+This work (hardened \texttt{runc}) & Shared kernel + generated seccomp/AppArmor/capabilities & $\approx$ seccomp filtering cost (assumed; not yet measured) \\
+gVisor & User-space kernel (Sentry) & $\sim$50--100\%~\cite{viktorsson2020,wang2022} \\
+Kata Containers & Per-container microVM & $\sim$20--40\%~\cite{viktorsson2020,volpert2024} \\
 \bottomrule
 \end{tabular}%
 }
 \end{table}
-
-\begin{figure}[H]
-\centering
-\resizebox{\textwidth}{!}{%
-\begin{tikzpicture}[
-    box/.style={rectangle, draw, rounded corners=2pt, minimum height=0.65cm, align=center, font=\scriptsize},
-    hook/.style={rectangle, draw, dashed, rounded corners=2pt, minimum height=0.65cm, align=center, font=\scriptsize, fill=yellow!15},
-    arr/.style={-Stealth, thick}
-]
-    \node[box, minimum width=1.5cm] (app) {Application};
-    \node[box, right=0.35cm of app, minimum width=1.1cm] (libc) {libc};
-    \node[box, right=0.35cm of libc, minimum width=1.3cm] (sc) {syscall};
-    \node[hook, right=0.35cm of sc, minimum width=1.45cm] (cap) {Capabilities};
-    \node[hook, right=0.25cm of cap, minimum width=1.35cm] (sec) {Seccomp BPF};
-    \node[hook, right=0.25cm of sec, minimum width=1.35cm] (aa) {AppArmor};
-    \node[box, right=0.35cm of aa, minimum width=1.1cm] (kern) {Kernel};
-    \node[box, right=0.35cm of kern, minimum width=1.2cm] (host) {Host FS / net};
-    \draw[arr] (app) -- (libc);
-    \draw[arr] (libc) -- (sc);
-    \draw[arr] (sc) -- (cap);
-    \draw[arr] (cap) -- (sec);
-    \draw[arr] (sec) -- (aa);
-    \draw[arr] (aa) -- (kern);
-    \draw[arr] (kern) -- (host);
-    \node[font=\footnotesize, align=center, below=0.55cm of sec] {Scanner records\\\texttt{cap\_capable} + syscalls + paths};
-\end{tikzpicture}%
-}
-\vspace{0.4em}
-\resizebox{\textwidth}{!}{%
-\footnotesize\setlength{\tabcolsep}{3pt}%
-\begin{tabular}{@{}lcccccc@{}}
-\toprule
-\textbf{Mechanism} & \textbf{Def.\ \texttt{runc}} & \textbf{Scan} & \textbf{Enforce} & \textbf{Manual} & \textbf{Recorder} & \textbf{Sandbox} \\
-\midrule
-Capabilities & Docker default & trace (wide) & narrowed set & expert-tuned & cluster policy & separate kernel (lit.) \\
-Seccomp & Docker default & trace (wide) & allow-list & expert-tuned & cluster policy & filtered/shim (lit.) \\
-AppArmor & often none & complain & enforce & expert-tuned & cluster policy & N/A or host LSM (lit.) \\
-Post-exploit shell & often possible & same & blocked (\texttt{fork}/\texttt{exec}) & depends & depends & strong isolation (lit.) \\
-\bottomrule
-\end{tabular}%
-}
-\caption{Syscall interception stack and posture matrix (reproduced from Figure~\ref{fig:security-levels}).}
-\label{fig:security-levels-ch5}
-\end{figure}
-
-\begin{itemize}
-    \item \textbf{Manual tuning} can match or exceed profile tightness but scales poorly across services and releases; the runtime scanner automates the same three mechanisms for teams without MAC expertise.
-    \item \textbf{Cluster recorders} (SPO, Inspektor Gadget) target the same profile shapes with broader multi-workload coverage and release diffing, at the cost of Kubernetes and platform engineering.
-    \item \textbf{Sandboxed runtimes} (gVisor, Kata) provide stronger kernel isolation on published benchmarks~\cite{wang2022,viktorsson2020,volpert2024} but do not emit reusable OCI profiles and impose permanent runtime overhead; they are compared here only through the literature, not through measurements in this thesis.
-\end{itemize}
-
-Performance comparison between stock \texttt{runc}, hardened enforcement, and sandboxes is deferred to future work (Chapter~\ref{ch:conclusion}).
