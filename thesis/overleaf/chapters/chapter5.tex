@@ -1,7 +1,7 @@
 
 \chapter{Experiments}\label{ch:experiments}
 
-This chapter reports the experimental evaluation of the proposed runtime. The goal is twofold: to confirm that a single \texttt{--security-scan} pass produces working seccomp, AppArmor, and capability profiles (RQ1), and to measure whether scan-then-enforce prevents command-injection exploitation and improves containment relative to stock \texttt{runc} (RQ2). The evaluation has an empirical part, run on the \texttt{runc-hardened-test} security laboratory, and an analytical part that positions the runtime's performance against sandboxed alternatives using published measurements. Section~\ref{sec:exp-setup} describes the experiment and its environment; Section~\ref{sec:exp-results} reports the results.
+This chapter reports the experimental evaluation of the proposed runtime. The goal is twofold: to confirm that a single \texttt{--security-scan} pass produces working seccomp, AppArmor, and capability profiles (RQ1), and to measure whether scan-then-enforce prevents command-injection exploitation and improves containment relative to stock \texttt{runc} (RQ2). The evaluation combines the \texttt{runc-hardened-test} security laboratory with the \texttt{performance-evaluation} benchmark harness. Section~\ref{sec:exp-setup} describes the security experiment; Section~\ref{sec:exp-results} reports security and performance results.
 
 \section{Experimental Setup}\label{sec:exp-setup}
 
@@ -71,32 +71,38 @@ The following payloads succeeded under stock \texttt{runc} but were blocked afte
 
 Legitimate ping (\texttt{/diag/ping?host=127.0.0.1}) and calendar upload (\texttt{POST /calendar/upload}) remained functional.
 
-\subsection{Performance: analytical comparison}\label{sec:exp-analytical}
+\subsection{Performance: measured enforcement and sandbox overhead}\label{sec:exp-analytical}
 
-This thesis does not run its own performance benchmarks; the comparison below is analytical and draws on published measurements. The relevant question is the steady-state overhead each confinement approach imposes relative to stock \texttt{runc}, which is the natural baseline because all three options either are \texttt{runc} or replace it.
+This section reports empirical results from the \texttt{performance-evaluation} harness (campaign \texttt{campaign-20260616-193735}, repository Appendix~\ref{app:repos}). Profiles were generated offline per workload; measurement replayed committed bundles only (no \texttt{--security-scan} during benchmarks).
 
-\textbf{Stock \texttt{runc}.} As a thin shared-kernel runtime, \texttt{runc} runs the workload directly on the host kernel and is treated as the near-native baseline (0\% reference overhead); its weakness is isolation, not speed~\cite{wang2022,volpert2024}.
+\textbf{Runtime matrix.} Both \texttt{stock} and \texttt{proposed} use the hardened \texttt{dpttk/runc} binary (\texttt{1.4.0-rc.1+dev}) and the same OCI bundle launcher. \texttt{stock} runs the raw bundle; \texttt{proposed} runs the enforced bundle (seccomp, AppArmor, narrowed capabilities). \texttt{docker} and \texttt{gvisor} share the Docker launcher; gVisor uses \texttt{runsc release-20250319.0}. This design isolates enforcement overhead from binary and launcher differences. \texttt{stock} is therefore \emph{not} upstream \texttt{runc}.
 
-\textbf{gVisor.} gVisor interposes a user-space kernel (Sentry) that intercepts and re-implements guest syscalls outside the host kernel. This buys strong isolation but adds a per-syscall user-space round trip, so syscall- and I/O-heavy workloads pay the most: reported overheads reach roughly 50--100\% relative to default \texttt{runc}~\cite{viktorsson2020,wang2022}.
-
-\textbf{Kata Containers.} Kata runs each container inside a lightweight virtual machine with its own kernel. The isolation boundary is hardware-assisted, but the microVM adds memory cost and a startup penalty, with steady-state overheads commonly reported around 20--40\%~\cite{viktorsson2020,volpert2024}.
-
-\textbf{This work (hardened \texttt{runc}).} The proposed runtime keeps the shared-kernel model and only adds enforcement of the generated profiles. At steady state this is the cost of ordinary seccomp filtering --- a per-syscall BPF check --- plus AppArmor path checks and a smaller capability set, none of which changes the execution model. Until dedicated benchmarks are run (left to future work, Chapter~\ref{ch:conclusion}), the working assumption is therefore that the runtime's overhead relative to stock \texttt{runc} stays at the level of normal seccomp operation, i.e.\ far below the sandbox figures above. The one-time scan pass carries a higher eBPF-tracing cost, but that is a build-time activity, not a steady-state property of the enforced container. Table~\ref{tab:perf-ch5} summarises the positioning.
+\textbf{Host and statistics.} Measurements ran on Ubuntu~24.04.4 inside an Oracle VirtualBox guest (\texttt{perf-bench}, four vCPUs, 8\,GiB RAM, no KVM, cpufreq governors not writable). Workloads: sysbench CPU and memory, 30\,s loopback iperf3, redis-benchmark SET/GET (500\,k requests). Each configuration used 10 warm-up and 50 measured repetitions; Table~\ref{tab:perf-ch5} reports medians. Overhead is $(1 - \mathrm{median}_{\mathrm{subject}}/\mathrm{median}_{\mathrm{baseline}})\times 100$; positive values mean lower throughput.
 
 \begin{table}[ht]
 \centering
-\caption{Analytical performance positioning relative to stock \texttt{runc}. Sandbox figures are taken from published measurements; the hardened row is an assumption pending dedicated benchmarks.}
+\caption{Measured median throughput and overhead (campaign \texttt{20260616-193735}). Enforcement rows compare \texttt{proposed} to \texttt{stock}; sandbox rows compare \texttt{gvisor} to \texttt{docker}.}
 \label{tab:perf-ch5}
 \resizebox{\textwidth}{!}{%
-\begin{tabular}{@{}p{3.4cm}p{4.6cm}p{4.2cm}@{}}
+\begin{tabular}{@{}llrrr@{}}
 \toprule
-\textbf{Runtime} & \textbf{Isolation model} & \textbf{Steady-state overhead vs.\ \texttt{runc}} \\
+\textbf{Family} & \textbf{Workload} & \textbf{Baseline median} & \textbf{Subject median} & \textbf{Overhead} \\
 \midrule
-Stock \texttt{runc} & Shared host kernel & Baseline (near-native) \\
-This work (hardened \texttt{runc}) & Shared kernel + generated seccomp/AppArmor/capabilities & $\approx$ seccomp filtering cost (assumed; not yet measured) \\
-gVisor & User-space kernel (Sentry) & $\sim$50--100\%~\cite{viktorsson2020,wang2022} \\
-Kata Containers & Per-container microVM & $\sim$20--40\%~\cite{viktorsson2020,volpert2024} \\
+Enforcement & CPU (events/s) & 2\,332 & 2\,346 & $-0.62\%$ \\
+Enforcement & Memory (MiB/s) & 6\,105\,132 & 6\,059\,380 & $+0.75\%$ \\
+Enforcement & Network (Gbit/s) & 55.20 & 55.85 & $-1.18\%$ \\
+Enforcement & Redis SET (req/s) & 89\,358 & 84\,324 & $+5.63\%$ \\
+Enforcement & Redis GET (req/s) & 89\,542 & 84\,587 & $+5.53\%$ \\
+\midrule
+Sandbox & CPU (events/s) & 2\,342 (docker) & 2\,282 (gVisor) & $+2.57\%$ \\
+Sandbox & Memory (MiB/s) & 6\,360\,881 & 1\,688\,603 & $+73.45\%$ \\
+Sandbox & Network (Gbit/s) & 55.65 & 38.50 & $+30.82\%$ \\
+Sandbox & Redis SET (req/s) & 87\,100 & 30\,844 & $+64.59\%$ \\
 \bottomrule
 \end{tabular}%
 }
 \end{table}
+
+\textbf{Interpretation.} Enforcing generated profiles added at most $\approx$5.5\% throughput overhead on Redis and less than 1\% on the other workloads relative to the same binary without profiles. gVisor remained 31--73\% slower than Docker on the same host---far above the enforcement penalty. On this VirtualBox guest, AppArmor loading failed for the redis workload (\texttt{apparmor/exec}); the redis enforcement row therefore reflects seccomp and capabilities primarily. A KVM-backed repeat with full triple-policy enforcement is left to future work (Chapter~\ref{ch:conclusion}).
+
+\textbf{Profile generation cost.} Offline scans took 3--35\,s per workload and produced 54--79 allowed syscalls with \texttt{SCMP\_ACT\_ERRNO} defaults (manifests under \texttt{profiles/} in the harness repository).
