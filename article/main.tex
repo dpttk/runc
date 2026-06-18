@@ -32,7 +32,7 @@ With growing adoption of OCI containers and increasingly automated offensive too
 
 This paper presents a security-oriented fork of \texttt{runc} (\texttt{dpttk/runc}, version~1.4.0-rc.1) in which profile generation is performed by the runtime itself. On a designated scanning invocation, the runtime relaxes confinement in memory, traces kernel interactions through \texttt{oci-seccomp-bpf-hook}, cgroup-scoped \texttt{capable-bpfcc}, and AppArmor complain mode, and writes a workload-specific seccomp allow-list, AppArmor profile, and minimised capability set back into the OCI bundle. Subsequent runs enforce these artefacts as ordinary OCI inputs; tracing logic ships as hidden sub-commands of the runtime binary, so the bundle gains data artefacts only.
 
-We evaluate the runtime on three axes. \textbf{Profile quality and containment} are measured on the \texttt{runc-hardened-test} laboratory: a single \texttt{--security-scan} pass produces deny-by-default policies, and scan-then-enforce blocks command-injection payloads that succeed under stock \texttt{runc} while preserving legitimate application traffic. \textbf{Enforcement overhead} is measured on four container workloads (sysbench CPU/memory, loopback iperf3, redis-benchmark) with 50 repetitions after warm-up: median throughput loss of the enforced configuration relative to the same binary without profiles is below 1\% on CPU, memory, and network workloads and about 5.5\% on Redis SET/GET. \textbf{Sandbox positioning} on the same host shows gVisor 2.6--73\% below Docker-default throughput depending on workload. Additional escape-class evaluations beyond the Flask laboratory are planned and left as explicit placeholders in Section~\ref{sec:eval-security-planned}.
+We evaluate the runtime on four axes. \textbf{Profile quality and containment} are measured on the \texttt{runc-hardened-test} laboratory: a single \texttt{--security-scan} pass produces deny-by-default policies, and scan-then-enforce blocks command-injection payloads that succeed under stock \texttt{runc} while preserving legitimate application traffic. \textbf{Kernel-boundary attack corpus} (\texttt{security-evaluation}) replays 22 scripted reproducers across four runtime configurations on the same host: enforced profiles (C2) block 17 of 18 applicable attacks, including all 15 syscall/capability/filesystem/lateral probes, versus 11 of 20 under Docker-default upstream \texttt{runc} (C0); misconfiguration attacks (\texttt{--privileged}, host PID) remain allowed under C2, as expected. \textbf{Enforcement overhead} is measured on four container workloads (sysbench CPU/memory, loopback iperf3, redis-benchmark) with 50 repetitions after warm-up: median throughput loss of the enforced configuration relative to the same binary without profiles is below 1\% on CPU, memory, and network workloads and about 5.5\% on Redis SET/GET. \textbf{Sandbox positioning} on the same host shows gVisor 2.6--73\% below Docker-default throughput depending on workload.
 
 \keywords{OCI runtime \and runc \and seccomp \and AppArmor \and Linux capabilities \and eBPF.}
 \end{abstract}
@@ -85,7 +85,7 @@ Syscall recording is delegated to \texttt{oci-seccomp-bpf-hook}~\cite{ociseccomp
 
 \section{Evaluation}\label{sec:evaluation}
 
-Evaluation is split into a \textbf{security laboratory} that answers whether scan-then-enforce blocks representative exploitation, a \textbf{performance harness} that quantifies enforcement and sandbox overhead on standard workloads, and a \textbf{planned extension} for additional escape-class tests.
+Evaluation is split into a \textbf{security laboratory} that answers whether scan-then-enforce blocks representative exploitation, a \textbf{kernel-boundary attack corpus} that quantifies containment across runtime configurations, a \textbf{performance harness} that quantifies enforcement and sandbox overhead on standard workloads, and scoped \textbf{runtime-CVE integrity checks}.
 
 \subsection{Security Laboratory (\texttt{runc-hardened-test})}\label{sec:eval-security}
 
@@ -174,28 +174,34 @@ Redis GET (req/s) & 89\,542 & 84\,587 & $+5.53\%$ \\
 
 \textbf{Operational notes.} Post-scan AppArmor adjustments for \texttt{/bin/sh}, \texttt{/tmp}, and workload-specific execute paths are applied automatically during profile preparation so functional checks pass; iperf3 additionally requires an unrestricted \texttt{socket} seccomp rule for loopback server/client pairs inside one container namespace. These steps are documented in the harness and are part of the reproducible pipeline, not ad-hoc tuning during measurement.
 
-\subsection{Planned Security Evaluations}\label{sec:eval-security-planned}
+\subsection{Security Attack Corpus (\texttt{security-evaluation})}\label{sec:eval-security-corpus}
 
-The Flask laboratory demonstrates scan-then-enforce against command injection on one realistic workload. The following evaluations are \textbf{not yet reported} and are reserved for a follow-on security campaign beyond \texttt{runc-hardened-test}:
+The \texttt{security-evaluation} harness~\cite{securityeval} complements the Flask laboratory with a reproducible attack corpus and a four-column runtime matrix. Configurations are \textbf{C0} (Docker-default upstream \texttt{runc}), \textbf{C1} (hardened \texttt{dpttk/runc} with a raw bundle), \textbf{C2} (same binary with an enforced minimal bundle produced by \texttt{--security-scan}), and \textbf{C3} (gVisor \texttt{runsc} via Docker). This naming is \emph{not} identical to the performance harness, where \texttt{stock} already uses the hardened binary without profiles: here C0 is the industry-weak upstream baseline, and C2 is the headline scan-then-enforce configuration.
+
+Twenty-two scripted reproducers span dangerous syscalls, capability-bound operations, filesystem breakouts, post-RCE lateral movement, deliberate misconfigurations, scoped runtime-CVE checks, and a positive control (\texttt{true}). Each cell is classified as \emph{blocked} when the attack exits non-zero with \texttt{SIGSYS}/\texttt{EPERM}/\texttt{EACCES}, kernel audit records \texttt{DENIED}, or the expected side-effect is absent; misconfiguration rows are negative tests that profile enforcement cannot retrofit.
+
+Campaign \texttt{campaign-20260618-220913} ran on host \texttt{perf-bench} (same VirtualBox guest as Section~\ref{sec:eval-performance}) with AppArmor enabled. Table~\ref{tab:security-effectiveness} reports blocked/total counts per class. Under C2, all 15 kernel-boundary probes (syscall, capability, filesystem, lateral) were blocked; the positive control succeeded. Under C0, Docker's default seccomp already blocked all five syscall reproducers, but six kernel-boundary attacks still succeeded (including host \texttt{/etc/passwd} reads and writes outside the rootfs). Misconfiguration attacks (\texttt{--privileged}, \texttt{--pid=host}) succeeded under both C0 and C3 and were not applicable to bundle-only C1/C2---an honest limit of profile-based enforcement. CVE-2019-5736 was not replayed as a host takeover; C2 instead verified hardened-\texttt{runc} binary integrity before and after the campaign~\cite{cve2019}. CVE-2024-21626 workdir/FD-leak reproducers did not succeed on any configuration~\cite{cve202421626}.
 
 \begin{table}
-\caption{Planned security evaluations (placeholders). Each row will report blocked vs.\ allowed outcomes under stock \texttt{runc}, enforced profiles, and selected misconfigurations.}
-\label{tab:security-planned}
+\caption{Security effectiveness: blocked/total reproducers per attack class and runtime configuration (campaign \texttt{20260618-220913}). Misconfiguration rows apply only to Docker-backed configs.}
+\label{tab:security-effectiveness}
 \centering
-\begin{tabular}{p{3.2cm}p{7.8cm}}
+\begin{tabular}{lrrrr}
 \toprule
-\textbf{Scenario} & \textbf{Purpose} \\
+\textbf{Attack class} & \textbf{C0} & \textbf{C1} & \textbf{C2} & \textbf{C3} \\
 \midrule
-CVE-2019-5736 replay & Test whether enforced profiles limit runc-based container breakout primitives after attacker-controlled writes. \\
-Privileged container / \texttt{docker.sock} mount & Measure containment when the deployment grants excessive privileges that profiling cannot fix retroactively. \\
-Broad capability or host mount misconfiguration & Quantify defence in depth when operators bypass minimal defaults before scanning. \\
-Post-RCE host lateral movement & After simulated compromise inside the namespace, test access to host files, other containers, and cgroup interfaces. \\
-Additional vulnerable applications & Generalise RQ2 beyond the Flask monitor to other injection and deserialization patterns. \\
+Dangerous syscall & 5/5 & 5/5 & 5/5 & 5/5 \\
+Capability-bound & 3/4 & 4/4 & 4/4 & 3/4 \\
+Filesystem breakout & 0/3 & 1/3 & 3/3 & 1/3 \\
+Post-RCE lateral & 1/3 & 1/3 & 3/3 & 1/3 \\
+Misconfiguration & 1/3 & --- & --- & 1/3 \\
+Runtime CVE (scoped) & 1/1 & 1/1 & 2/2 & 1/1 \\
+Positive control & 0/1 & 0/1 & 0/1 & 0/1 \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-\noindent Until these rows are populated, security claims in this paper are bounded to the laboratory results in Section~\ref{sec:eval-security}.
+\noindent\textbf{Methodological note.} C2 blocks strictly more kernel-boundary attacks than C1 (15/15 vs.\ 11/15), isolating the value of enforced profiles over fork defaults alone. gVisor (C3) blocks syscall probes architecturally but still allows several filesystem and misconfiguration paths on this corpus---useful as a sandbox reference column, not as a drop-in substitute for workload-specific profiling on shared-kernel runtimes.
 
 \section{Analysis}\label{sec:analysis}
 
@@ -213,9 +219,11 @@ The laboratory shows that, for an exercised web workload, automatic profiles blo
 
 \textbf{File capabilities.} Privileges embedded in executable xattrs (e.g.\ \texttt{CAP\_NET\_RAW} on \texttt{ping}) are not yet merged from \texttt{security.capability}; operators must allow-list them explicitly.
 
-\textbf{Measurement environment.} The performance campaign ran inside VirtualBox without KVM or CPU governor pinning; variance is higher than on a dedicated bare-metal or KVM guest. Two launcher families (OCI bundle vs.\ Docker) are required because enforced OCI profiles cannot be applied identically through Docker's runtime path.
+\textbf{Incomplete application coverage.} The Flask laboratory and the attack corpus do not yet include additional vulnerable applications (e.g.\ OWASP Juice Shop) or Kata Containers as a hardware-virtualised baseline.
 
-\textbf{Incomplete security matrix.} Table~\ref{tab:security-planned} marks escape-class and misconfiguration tests still outstanding.
+\textbf{Misconfiguration limits.} Table~\ref{tab:security-effectiveness} shows that operator-granted excessive privileges (\texttt{--privileged}, host PID namespace) bypass profile enforcement by design; containment then depends on deployment hygiene, not runtime scanning alone.
+
+\textbf{Measurement environment.} The performance campaign ran inside VirtualBox without KVM or CPU governor pinning; variance is higher than on a dedicated bare-metal or KVM guest. Two launcher families (OCI bundle vs.\ Docker) are required because enforced OCI profiles cannot be applied identically through Docker's runtime path.
 
 \subsection{Operational Trade-Off}
 
@@ -227,12 +235,12 @@ Prior runtime comparisons show that default \texttt{runc} is fast but weaker as 
 
 \section{Conclusion}\label{sec:conclusion}
 
-This paper presented a \texttt{runc} fork that turns workload-specific profile generation into a runtime-side workflow. On the \texttt{runc-hardened-test} laboratory, scan-then-enforce blocked command-injection exploitation while preserving legitimate traffic. On the \texttt{performance-evaluation} harness, enforcing generated profiles on four standard workloads added at most $\approx$5.5\% median throughput overhead relative to the same binary without profiles, while gVisor remained 30--73\% slower than Docker on the same measurements.
+This paper presented a \texttt{runc} fork that turns workload-specific profile generation into a runtime-side workflow. On the \texttt{runc-hardened-test} laboratory, scan-then-enforce blocked command-injection exploitation while preserving legitimate traffic. On the \texttt{security-evaluation} corpus, enforced profiles blocked all 15 kernel-boundary reproducers versus six successes under Docker-default upstream \texttt{runc}. On the \texttt{performance-evaluation} harness, enforcing generated profiles on four standard workloads added at most $\approx$5.5\% median throughput overhead relative to the same binary without profiles, while gVisor remained 30--73\% slower than Docker on the same measurements.
 
-Future work will populate Table~\ref{tab:security-planned}, merge file-capability xattrs at scan time, emit Security Profiles Operator-compatible resources, and repeat the performance campaign on a KVM-backed host with cpufreq control. Within the evaluated scope, runtime-side profiling is a practical middle ground between default \texttt{runc} and full sandboxing.
+Future work will extend the attack corpus to additional vulnerable applications, merge file-capability xattrs at scan time, emit Security Profiles Operator-compatible resources, and repeat the performance campaign on a KVM-backed host with cpufreq control. Within the evaluated scope, runtime-side profiling is a practical middle ground between default \texttt{runc} and full sandboxing.
 
 \begin{credits}
-\subsubsection{\ackname} Benchmark artefacts and reproducibility scripts are published at \url{https://github.com/dpttk/performance-testing} and \url{https://github.com/dpttk/runc-hardened-test}.
+\subsubsection{\ackname} Benchmark artefacts and reproducibility scripts are published at \url{https://github.com/dpttk/performance-testing}, \url{https://github.com/dpttk/security-evaluation}, and \url{https://github.com/dpttk/runc-hardened-test}.
 
 \subsubsection{\discintname} The authors have no competing interests to declare that are relevant to the content of this article.
 \end{credits}

@@ -29,13 +29,13 @@ The proposed runtime was situated against manual policy authoring, cluster-side 
 
 \section{Future Work}
 
-\textbf{Extended security evaluations.} Beyond the \texttt{runc-hardened-test} Flask laboratory, additional scenarios should be reported: CVE-2019-5736 replay, privileged containers and \texttt{docker.sock} mounts, broad capability or host-path misconfigurations, and post-RCE attempts to reach the host or peer containers.
+\textbf{Extended security evaluations.} The \texttt{security-evaluation} corpus (Chapter~\ref{ch:experiments}, Section~\ref{sec:exp-security-corpus}) covers kernel-boundary reproducers, misconfigurations, and scoped runtime-CVE checks. Future work should add vulnerable applications such as OWASP Juice Shop, Kata Containers as a hardware-virtualised baseline, and full CVE-2019-5736 takeover replays on disposable hosts.
 
 \textbf{Performance campaign refinement.} The first harness campaign (\texttt{campaign-20260616-193735}) should be repeated on a KVM-backed host with cpufreq pinning and full AppArmor enforcement on all workloads (the VirtualBox guest could not load AppArmor for redis).
 
-\textbf{Broader laboratory coverage.} Additional intentionally vulnerable workloads and attack scripts would test whether containment results generalise beyond the Flask system-monitor bundle.
+\textbf{Broader laboratory coverage.} Additional intentionally vulnerable workloads would test whether containment results generalise beyond the Flask system-monitor bundle and the minimal Debian attack rootfs.
 
-\textbf{Quantitative containment metrics.} Future experiments should complement the current qualitative succeed/block outcomes with normalised metrics across attack classes and deployment mistakes, including privileged containers and \texttt{docker.sock} mounts when those scenarios are intentionally in scope.
+\textbf{Quantitative containment metrics.} The security matrix now reports blocked/total counts per class; future campaigns should add normalised scoring across deployment mistakes when new misconfiguration reproducers are introduced.
 
 \textbf{File-capability merge.} Reading \texttt{security.capability} xattrs on executed binaries during scan would close the \texttt{ping}/\texttt{CAP\_NET\_RAW} gap without laboratory workarounds.
 

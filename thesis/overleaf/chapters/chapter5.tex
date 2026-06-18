@@ -1,7 +1,7 @@
 
 \chapter{Experiments}\label{ch:experiments}
 
-This chapter reports the experimental evaluation of the proposed runtime. The goal is twofold: to confirm that a single \texttt{--security-scan} pass produces working seccomp, AppArmor, and capability profiles (RQ1), and to measure whether scan-then-enforce prevents command-injection exploitation and improves containment relative to stock \texttt{runc} (RQ2). The evaluation combines the \texttt{runc-hardened-test} security laboratory with the \texttt{performance-evaluation} benchmark harness. Section~\ref{sec:exp-setup} describes the security experiment; Section~\ref{sec:exp-results} reports security and performance results.
+This chapter reports the experimental evaluation of the proposed runtime. The goal is twofold: to confirm that a single \texttt{--security-scan} pass produces working seccomp, AppArmor, and capability profiles (RQ1), and to measure whether scan-then-enforce prevents command-injection exploitation and improves containment relative to stock \texttt{runc} (RQ2). The evaluation combines the \texttt{runc-hardened-test} security laboratory, the \texttt{security-evaluation} attack corpus, and the \texttt{performance-evaluation} benchmark harness. Section~\ref{sec:exp-setup} describes the security experiment; Section~\ref{sec:exp-results} reports security and performance results.
 
 \section{Experimental Setup}\label{sec:exp-setup}
 
@@ -70,6 +70,35 @@ The following payloads succeeded under stock \texttt{runc} but were blocked afte
 \end{itemize}
 
 Legitimate ping (\texttt{/diag/ping?host=127.0.0.1}) and calendar upload (\texttt{POST /calendar/upload}) remained functional.
+
+\subsection{Kernel-boundary attack corpus}\label{sec:exp-security-corpus}
+
+To quantify containment beyond the Flask laboratory, the \texttt{security-evaluation} harness (Appendix~\ref{app:repos}) replays a scripted attack corpus against four runtime configurations on the same \texttt{perf-bench} host: \textbf{C0} Docker-default upstream \texttt{runc}, \textbf{C1} hardened \texttt{dpttk/runc} with a raw bundle, \textbf{C2} hardened \texttt{runc} with an enforced minimal bundle from \texttt{--security-scan}, and \textbf{C3} gVisor \texttt{runsc}. This matrix deliberately differs from the performance harness naming: C0 is the weak upstream baseline, not the hardened binary without profiles.
+
+Campaign \texttt{campaign-20260618-220913} executed 22 reproducers (dangerous syscalls, capability-bound mounts, filesystem breakouts, post-RCE lateral movement, misconfigurations, scoped runtime-CVE checks, and a positive control). An attack is \emph{blocked} when it fails with seccomp/AppArmor signals, kernel audit \texttt{DENIED} records, or missing expected side-effects. Table~\ref{tab:security-corpus-ch5} summarises blocked/total counts.
+
+\begin{table}[ht]
+\centering
+\caption{Kernel-boundary security effectiveness (campaign \texttt{20260618-220913}). Misconfiguration rows apply only to Docker-backed configs.}
+\label{tab:security-corpus-ch5}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{@{}lrrrr@{}}
+\toprule
+\textbf{Attack class} & \textbf{C0} & \textbf{C1} & \textbf{C2} & \textbf{C3} \\
+\midrule
+Dangerous syscall & 5/5 & 5/5 & 5/5 & 5/5 \\
+Capability-bound & 3/4 & 4/4 & 4/4 & 3/4 \\
+Filesystem breakout & 0/3 & 1/3 & 3/3 & 1/3 \\
+Post-RCE lateral & 1/3 & 1/3 & 3/3 & 1/3 \\
+Misconfiguration & 1/3 & --- & --- & 1/3 \\
+Runtime CVE (scoped) & 1/1 & 1/1 & 2/2 & 1/1 \\
+Positive control & 0/1 & 0/1 & 0/1 & 0/1 \\
+\bottomrule
+\end{tabular}%
+}
+\end{table}
+
+Under C2, all 15 kernel-boundary probes were blocked while the positive control succeeded. C1 blocked 11/15, isolating the incremental value of enforced profiles over fork defaults alone. Docker-default C0 still allowed six kernel-boundary successes (including host file reads and writes outside the container rootfs) despite blocking syscall reproducers via Docker's default seccomp. Misconfiguration attacks (\texttt{--privileged}, \texttt{--pid=host}) succeeded under C0 and C3 and were not applicable to bundle-only C1/C2---documenting an honest limit of scan-then-enforce. CVE-2019-5736 was checked as a binary-integrity guard rather than a host-takeover replay; CVE-2024-21626 FD-leak reproducers did not succeed on any configuration.
 
 \subsection{Performance: measured enforcement and sandbox overhead}\label{sec:exp-analytical}
 
