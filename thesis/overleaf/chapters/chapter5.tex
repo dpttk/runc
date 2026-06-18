@@ -75,11 +75,11 @@ Legitimate ping (\texttt{/diag/ping?host=127.0.0.1}) and calendar upload (\textt
 
 To quantify containment beyond the Flask laboratory, the \texttt{security-evaluation} harness (Appendix~\ref{app:repos}) replays a scripted attack corpus against four runtime configurations on the same \texttt{perf-bench} host: \textbf{C0} Docker-default upstream \texttt{runc}, \textbf{C1} hardened \texttt{dpttk/runc} with a raw bundle, \textbf{C2} hardened \texttt{runc} with an enforced minimal bundle from \texttt{--security-scan}, and \textbf{C3} gVisor \texttt{runsc}. This matrix deliberately differs from the performance harness naming: C0 is the weak upstream baseline, not the hardened binary without profiles.
 
-Campaign \texttt{campaign-20260618-220913} executed 22 reproducers (dangerous syscalls, capability-bound mounts, filesystem breakouts, post-RCE lateral movement, misconfigurations, scoped runtime-CVE checks, and a positive control). An attack is \emph{blocked} when it fails with seccomp/AppArmor signals, kernel audit \texttt{DENIED} records, or missing expected side-effects. Table~\ref{tab:security-corpus-ch5} summarises blocked/total counts.
+Campaign \texttt{campaign-20260618-222423} executed 22 reproducers (dangerous syscalls, capability-bound mounts, filesystem breakouts, post-RCE lateral movement, misconfigurations, scoped runtime-CVE checks, and a positive control). An attack is \emph{blocked} when it fails with seccomp/AppArmor signals, kernel audit \texttt{DENIED} records, or missing expected side-effects. Each attempted cell stores an evidence log with stdout/stderr and the audit window under \texttt{results/latest/logs}. Table~\ref{tab:security-corpus-ch5} summarises blocked/total counts.
 
 \begin{table}[ht]
 \centering
-\caption{Kernel-boundary security effectiveness (campaign \texttt{20260618-220913}). Misconfiguration rows apply only to Docker-backed configs.}
+\caption{Kernel-boundary security effectiveness (campaign \texttt{20260618-222423}). Misconfiguration rows apply only to Docker-backed configs.}
 \label{tab:security-corpus-ch5}
 \resizebox{\textwidth}{!}{%
 \begin{tabular}{@{}lrrrr@{}}
