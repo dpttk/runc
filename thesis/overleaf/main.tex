@@ -53,7 +53,7 @@
 \usepackage{caption}
 \usepackage{subcaption}
 \usepackage{hyperref}
-\hypersetup{colorlinks=true, linkcolor=black, citecolor=black}
+\hypersetup{colorlinks=false, urlcolor=black, linkcolor=black, citecolor=black}
 \usepackage{paralist}
 \usepackage{listings}
 \usepackage{zed-csp}
@@ -87,7 +87,13 @@
 
 \captionsetup[lstlisting]{justification=raggedright,singlelinecheck=false}
 % \setcounter{secnumdepth}{4}
-\captionsetup[table]{labelfont={normalfont}, name={TABLE}, labelsep={newline}}
+\captionsetup[table]{
+  labelfont={normalfont},
+  name={TABLE},
+  labelsep=newline,
+  justification=centering,
+  singlelinecheck=false
+}
 \setlength{\parindent}{2em} 
 \DeclareCaptionLabelSeparator{figSep}{.\quad}
 \captionsetup[figure]{justification=raggedright,singlelinecheck=false,labelfont={normalfont}, name={Fig.}, labelsep=period}
